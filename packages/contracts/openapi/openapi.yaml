@@ -1,0 +1,883 @@
+openapi: 3.0.3
+info:
+    title: StraforAI API (legacy monolith surface)
+    version: '1.0.0'
+    description: |
+        Contract for the CURRENT Express monolith in `apps/api`.
+        `x-strangler: true` marks this as the legacy surface being migrated
+        to versioned endpoints under `/api/v1` as services are extracted.
+        Keep this document in sync with `apps/api/routes/` until then.
+    x-strangler: true
+servers:
+    - url: http://localhost:3000
+      description: Local development
+tags:
+    - name: health
+    - name: auth
+    - name: vacancies
+    - name: candidates
+    - name: dashboard
+    - name: ai
+    - name: settings
+    - name: user
+    - name: admin
+    - name: hr
+    - name: countries
+
+paths:
+    /api/health:
+        get:
+            tags: [health]
+            summary: Liveness/readiness probe — reports real DB status
+            x-strangler: true
+            security: []
+            responses:
+                '200': { $ref: '#/components/responses/HealthOk' }
+                '503': { $ref: '#/components/responses/HealthDegraded' }
+
+    /api/auth/login:
+        post:
+            tags: [auth]
+            summary: Log in, returns a short-lived JWT
+            x-strangler: true
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [email, password]
+                            properties:
+                                email: { type: string, format: email }
+                                password: { type: string, minLength: 1 }
+            responses:
+                '200': { description: JWT + user profile }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '429': { $ref: '#/components/responses/RateLimited' }
+    /api/auth/register:
+        post:
+            tags: [auth]
+            summary: Create an HR/admin account (admin only)
+            x-strangler: true
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [firstName, lastName, email, password, role]
+                            properties:
+                                firstName: { type: string }
+                                lastName: { type: string }
+                                email: { type: string, format: email }
+                                password: { type: string, minLength: 6 }
+                                role: { type: string, enum: [admin, hr] }
+                                location:
+                                    type: object
+                                    properties:
+                                        country: { type: string }
+                                        city: { type: string }
+            responses:
+                '201': { description: Account created }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '429': { $ref: '#/components/responses/RateLimited' }
+    /api/auth/logout:
+        post:
+            tags: [auth]
+            summary: Invalidate the current token (server-side revocation)
+            x-strangler: true
+            responses:
+                '200': { description: Logged out }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /api/auth/countries:
+        get:
+            tags: [auth, countries]
+            summary: Country list used by registration forms
+            x-strangler: true
+            security: []
+            responses:
+                '200': { description: Array of countries }
+
+    /api/vacancies:
+        get:
+            tags: [vacancies]
+            summary: List published vacancies (public career page)
+            x-strangler: true
+            security: []
+            responses:
+                '200': { description: Array of vacancies }
+        post:
+            tags: [vacancies]
+            summary: Create a vacancy (HR only)
+            x-strangler: true
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/VacancyCreate' }
+            responses:
+                '201': { description: Vacancy created }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/vacancies/{id}/candidates:
+        get:
+            tags: [vacancies, candidates]
+            summary: Candidates applied to a vacancy (HR only)
+            description: |
+                Legacy shape — one row per application with candidate fields merged in
+                (status, hiring_feedback, ai_feedback_analysis, applied_at now come
+                from `applications`). Each row also carries `application_id` and
+                `needs_feedback`. New consumers should use /api/vacancies/{id}/applications.
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200':
+                    description: Array of candidate rows (application context)
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items: { $ref: '#/components/schemas/CandidateApplicationRow' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /api/vacancies/{id}/applications:
+        get:
+            tags: [vacancies, candidates]
+            summary: Canonical applications list for a vacancy (HR only)
+            description: |
+                One object per application: application fields at the top level,
+                the candidate nested under `candidate`.
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200':
+                    description: Array of applications
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items: { $ref: '#/components/schemas/Application' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /api/vacancies/{id}/top-candidates:
+        get:
+            tags: [vacancies, ai]
+            summary: Ranked candidates for a vacancy via the ai-matching service (HR only)
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: Ranked candidates with match scores }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/vacancies/{id}:
+        get:
+            tags: [vacancies]
+            summary: Single vacancy detail (HR only)
+            description: The public careers page reads the open list instead; this detail endpoint is for the internal screens.
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: Vacancy }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        put:
+            tags: [vacancies]
+            summary: Partially update a vacancy (HR only)
+            description: |
+                Whitelisted-column partial update. `skills_required` re-syncs the
+                `vacancy_skills` link table in the same transaction. `status`
+                accepts the canonical lifecycle values (Active, Paused, Closed,
+                Draft). At least one field must be provided.
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/VacancyUpdate' }
+            responses:
+                '200': { description: Updated vacancy }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [vacancies]
+            summary: Delete a vacancy (HR only)
+            description: Soft delete — tombstones the vacancy and all of its applications in one transaction. Nothing is physically removed.
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: Vacancy deleted }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /api/candidates:
+        get:
+            tags: [candidates]
+            summary: List all candidates (HR only)
+            description: |
+                One row per application (a candidate applied to two vacancies appears
+                twice). `applied_for` is populated as `{ _id, title }`; per-application
+                fields (status, hiring_feedback, ai_feedback_analysis, applied_at)
+                come from the `applications` table. Each row has `application_id`.
+            x-strangler: true
+            parameters:
+                - { name: status, in: query, schema: { type: string, enum: [pending, interview, accepted, rejected] } }
+                - { name: vacancy_id, in: query, schema: { type: integer, minimum: 1 } }
+                - {
+                      name: applied_for,
+                      in: query,
+                      schema: { type: integer, minimum: 1 },
+                      description: legacy alias of vacancy_id
+                  }
+                - {
+                      name: q,
+                      in: query,
+                      schema: { type: string, maxLength: 255 },
+                      description: case-insensitive substring over name,
+                      email and skills
+                  }
+                - {
+                      name: orderBy,
+                      in: query,
+                      schema: { type: string },
+                      description: 'e.g. "applied_at DESC" — whitelisted columns only'
+                  }
+                - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000 } }
+            responses:
+                '200':
+                    description: Array of candidate rows (application context)
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items: { $ref: '#/components/schemas/CandidateApplicationRow' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+        post:
+            tags: [candidates]
+            summary: Create candidate, optionally with a resume file (HR only)
+            x-strangler: true
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema: { $ref: '#/components/schemas/CandidateCreate' }
+            responses:
+                '201': { description: Candidate created }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '413': { description: File too large (5MB limit) }
+                '415': { description: Disallowed file type/content }
+    /api/candidates/upload:
+        post:
+            tags: [candidates]
+            summary: Upload a resume file to secure storage (HR only)
+            x-strangler: true
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            required: [resume]
+                            properties:
+                                resume: { type: string, format: binary, description: PDF or DOCX, max 5MB }
+            responses:
+                '200': { description: Stored filename }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/candidates/{id}/resume:
+        get:
+            tags: [candidates]
+            summary: Download a candidate resume (HR only, authenticated file access)
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: Resume binary }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /api/candidates/{id}/status:
+        put:
+            tags: [candidates]
+            summary: Update candidate pipeline status (HR only)
+            description: |
+                Status lives on the application. `vacancy_id` (or legacy `applied_for`)
+                selects which application to update when the candidate has several;
+                otherwise the most recent application is used. Every transition writes
+                a row to `application_status_history`.
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [status]
+                            properties:
+                                status: { type: string, enum: [pending, interview, accepted, rejected] }
+                                vacancy_id: { type: integer, nullable: true }
+                                applied_for: { type: integer, nullable: true }
+            responses:
+                '200': { description: Updated candidate row (application context) }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /api/candidates/{id}/feedback:
+        put:
+            tags: [candidates]
+            summary: Record hiring feedback on an accepted candidate (HR only)
+            description: Same application-resolution rules as the status endpoint.
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [hiring_feedback]
+                            properties:
+                                hiring_feedback: { type: string }
+                                ai_insights: { type: string, nullable: true }
+                                vacancy_id: { type: integer, nullable: true }
+                                applied_for: { type: integer, nullable: true }
+            responses:
+                '200': { description: Updated candidate row (application context) }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /api/candidates/{id}/history:
+        get:
+            tags: [candidates]
+            summary: Status-change timeline for a candidate's application (HR only)
+            description: |
+                Reads `application_status_history` — one row per transition,
+                oldest first, with the actor's name joined in. `vacancy_id` (or
+                legacy `applied_for`) picks which application when the candidate
+                applied to several vacancies; defaults to the most recent.
+            parameters:
+                - { $ref: '#/components/parameters/IdParam' }
+                - { name: vacancy_id, in: query, schema: { type: integer, minimum: 1, nullable: true } }
+                - { name: applied_for, in: query, schema: { type: integer, minimum: 1, nullable: true } }
+            responses:
+                '200':
+                    description: Array of status-history rows
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items: { $ref: '#/components/schemas/StatusHistoryEntry' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /api/dashboard/activity:
+        get:
+            tags: [dashboard]
+            summary: Recent activity feed (HR only)
+            x-strangler: true
+            responses:
+                '200': { description: Activity items }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/dashboard/application-trends:
+        get:
+            tags: [dashboard]
+            summary: Application volume over time (HR only)
+            x-strangler: true
+            responses:
+                '200': { description: Trend series }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/dashboard/department-stats:
+        get:
+            tags: [dashboard]
+            summary: Per-department aggregates (HR only)
+            x-strangler: true
+            responses:
+                '200': { description: Department stats }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/dashboard/generate-report:
+        get:
+            tags: [dashboard]
+            summary: Generate a PDF report (HR only)
+            x-strangler: true
+            responses:
+                '200': { description: application/pdf document }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /api/ai/process-feedback:
+        post:
+            tags: [ai]
+            summary: Feed hiring feedback back into the matcher (HR only)
+            x-strangler: true
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [candidateId, vacancyId, feedback]
+                            properties:
+                                candidateId: { type: integer }
+                                vacancyId: { type: integer }
+                                feedback: { type: string }
+            responses:
+                '200': { description: Feedback processed }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /api/settings:
+        get:
+            tags: [settings]
+            summary: Current user settings (authenticated)
+            x-strangler: true
+            responses:
+                '200': { description: Settings object }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /api/settings/company:
+        post:
+            tags: [settings]
+            summary: Update company profile settings (authenticated)
+            x-strangler: true
+            responses:
+                '200': { description: Settings updated }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /api/settings/api-config:
+        get:
+            tags: [settings]
+            summary: Read external integration config (admin only)
+            x-strangler: true
+            responses:
+                '200': { description: API config }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/settings/linkedin-config:
+        post:
+            tags: [settings]
+            summary: Store LinkedIn OAuth config (admin only)
+            x-strangler: true
+            responses:
+                '200': { description: Config stored }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/settings/occ-config:
+        post:
+            tags: [settings]
+            summary: Store OCC API config (admin only)
+            x-strangler: true
+            responses:
+                '200': { description: Config stored }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /api/user/profile:
+        get:
+            tags: [user]
+            summary: Current user's profile (authenticated)
+            x-strangler: true
+            responses:
+                '200': { description: User profile }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+        put:
+            tags: [user]
+            summary: Update own profile (authenticated)
+            x-strangler: true
+            responses:
+                '200': { description: Updated profile }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /api/admin-accounts:
+        get:
+            tags: [admin]
+            summary: List admin accounts (admin only)
+            x-strangler: true
+            responses:
+                '200': { description: Array of admin users }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+        post:
+            tags: [admin]
+            summary: Create an admin account (admin only)
+            x-strangler: true
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/AccountUpsert' }
+            responses:
+                '201': { description: Account created }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/admin-accounts/{id}:
+        get:
+            tags: [admin]
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: Admin account }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        put:
+            tags: [admin]
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/AccountUpsert' }
+            responses:
+                '200': { description: Updated }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [admin]
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: Deleted }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /api/hr-accounts:
+        get:
+            tags: [hr]
+            summary: List HR accounts (admin only)
+            x-strangler: true
+            responses:
+                '200': { description: Array of HR users }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /api/hr-accounts/{id}:
+        get:
+            tags: [hr]
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: HR account }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        put:
+            tags: [hr]
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: Updated }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [hr]
+            x-strangler: true
+            parameters: [{ $ref: '#/components/parameters/IdParam' }]
+            responses:
+                '200': { description: Deleted }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /api/countries:
+        get:
+            tags: [countries]
+            summary: List countries (public)
+            x-strangler: true
+            security: []
+            responses:
+                '200': { description: Array of countries }
+    /api/countries/{country}/states:
+        get:
+            tags: [countries]
+            summary: List states/regions of a country (public)
+            x-strangler: true
+            security: []
+            parameters:
+                - name: country
+                  in: path
+                  required: true
+                  schema: { type: string }
+            responses:
+                '200': { description: Array of states }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+    securitySchemes:
+        bearerAuth:
+            type: http
+            scheme: bearer
+            bearerFormat: JWT
+    parameters:
+        IdParam:
+            name: id
+            in: path
+            required: true
+            schema: { type: integer, minimum: 1 }
+    schemas:
+        Error:
+            type: object
+            required: [error]
+            properties:
+                error: { type: string }
+                details: {}
+        VacancyCreate:
+            type: object
+            required:
+                [
+                    title,
+                    department,
+                    location,
+                    type,
+                    description,
+                    requirements,
+                    responsibilities,
+                    skills_required,
+                    experience_level,
+                    salary_range
+                ]
+            properties:
+                title: { type: string }
+                department: { type: string }
+                location: { type: string }
+                type: { type: string }
+                description: { type: string }
+                requirements: { type: string }
+                responsibilities: { type: string }
+                skills_required: { type: array, items: { type: string } }
+                experience_level: { type: string }
+                salary_range:
+                    type: object
+                    required: [min, max, currency]
+                    properties:
+                        min: { type: number }
+                        max: { type: number }
+                        currency: { type: string }
+                benefits: { type: array, items: { type: string } }
+                remote_option: { type: boolean }
+                application_deadline: { type: string, format: date, nullable: true }
+                external_postings:
+                    type: object
+                    nullable: true
+                    properties:
+                        linkedin: { type: boolean }
+                        occ: { type: boolean }
+        VacancyUpdate:
+            type: object
+            description: |
+                PATCH-style body for PUT /api/vacancies/{id}: every field of
+                VacancyCreate is optional here, plus the lifecycle `status`.
+                At least one field is required.
+            minProperties: 1
+            properties:
+                title: { type: string }
+                department: { type: string }
+                location: { type: string }
+                type: { type: string }
+                description: { type: string }
+                requirements: { type: string }
+                responsibilities: { type: string }
+                skills_required: { type: array, items: { type: string }, minItems: 1 }
+                experience_level: { type: string }
+                status: { type: string, enum: [Active, Paused, Closed, Draft] }
+                salary_range:
+                    type: object
+                    required: [min, max, currency]
+                    properties:
+                        min: { type: number }
+                        max: { type: number }
+                        currency: { type: string }
+                benefits: { type: array, items: { type: string } }
+                remote_option: { type: boolean }
+                application_deadline: { type: string, format: date, nullable: true }
+                external_postings:
+                    type: object
+                    nullable: true
+                    properties:
+                        linkedin: { type: boolean }
+                        occ: { type: boolean }
+        StatusHistoryEntry:
+            type: object
+            properties:
+                id: { type: integer }
+                application_id: { type: integer }
+                from_status: { type: string, nullable: true, enum: [pending, interview, accepted, rejected, null] }
+                to_status: { type: string, enum: [pending, interview, accepted, rejected] }
+                changed_by: { type: integer, nullable: true }
+                changed_at: { type: string, format: date-time }
+                note: { type: string, nullable: true }
+                changed_by_first_name: { type: string, nullable: true }
+                changed_by_last_name: { type: string, nullable: true }
+        CandidateCreate:
+            type: object
+            required: [first_name, last_name, email, phone, experience, education, location, skills, applied_for]
+            description: |
+                `applied_for` is the vacancy id — it creates an `applications` row.
+                Reusing an existing (unique) candidate email attaches a new application
+                to that candidate instead of creating a duplicate.
+            properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                linkedin: { type: string, nullable: true }
+                experience: { type: integer, minimum: 0 }
+                education: { type: string }
+                location: { type: string }
+                skills: { type: string }
+                applied_for: { type: integer }
+                current_position: { type: string, nullable: true }
+                applied_at: { type: string, format: date }
+                resume: { type: string, format: binary }
+        CandidateApplicationRow:
+            type: object
+            description: |
+                Candidate fields merged with one application context. `_id` mirrors
+                `id` (string) for legacy frontend compatibility. Timestamps are
+                `created_at`/`updated_at` (snake_case since the schema normalization).
+            properties:
+                id: { type: integer }
+                _id: { type: string, description: stringified candidate id }
+                application_id: { type: integer }
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string }
+                phone: { type: string }
+                linkedin: { type: string, nullable: true }
+                experience: { type: integer }
+                education: { type: string }
+                location: { type: string }
+                skills: { type: string, description: CSV — normalized copy in candidate_skills }
+                resume: { type: string, nullable: true, description: stored filename }
+                current_position: { type: string, nullable: true }
+                created_at: { type: string, format: date-time }
+                updated_at: { type: string, format: date-time }
+                status: { type: string, enum: [pending, interview, accepted, rejected] }
+                hiring_feedback: { type: string, nullable: true }
+                ai_insights: { type: string, nullable: true }
+                ai_feedback_analysis: { type: object, nullable: true }
+                feedback_timestamp: { type: string, format: date-time, nullable: true }
+                applied_at: { type: string, format: date-time }
+                applied_for:
+                    description: vacancy id (int) on vacancy-scoped endpoints; { _id, title } object on GET /api/candidates and POST /api/candidates
+        Application:
+            type: object
+            properties:
+                id: { type: integer }
+                _id: { type: string, description: stringified application id }
+                vacancy_id: { type: integer }
+                status: { type: string, enum: [pending, interview, accepted, rejected] }
+                hiring_feedback: { type: string, nullable: true }
+                ai_insights: { type: string, nullable: true }
+                ai_feedback_analysis: { type: object, nullable: true }
+                feedback_timestamp: { type: string, format: date-time, nullable: true }
+                applied_at: { type: string, format: date-time }
+                created_by: { type: integer, nullable: true }
+                created_at: { type: string, format: date-time }
+                updated_at: { type: string, format: date-time }
+                candidate:
+                    type: object
+                    properties:
+                        id: { type: integer }
+                        _id: { type: string }
+                        first_name: { type: string }
+                        last_name: { type: string }
+                        email: { type: string }
+                        phone: { type: string }
+                        linkedin: { type: string, nullable: true }
+                        experience: { type: integer }
+                        education: { type: string }
+                        location: { type: string }
+                        skills: { type: string }
+                        resume: { type: string, nullable: true }
+                        current_position: { type: string, nullable: true }
+        AccountUpsert:
+            type: object
+            required: [firstName, lastName, email]
+            properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 6 }
+                location:
+                    type: object
+                    nullable: true
+                    properties:
+                        country: { type: string }
+                        city: { type: string }
+    responses:
+        HealthOk:
+            description: Service healthy
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            status: { type: string, example: ok }
+                            db: { type: string, example: up }
+                            timestamp: { type: string, format: date-time }
+        HealthDegraded:
+            description: Service up but DB unreachable
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            status: { type: string, example: degraded }
+                            db: { type: string, example: down }
+                            timestamp: { type: string, format: date-time }
+        ValidationError:
+            description: Request failed Zod validation
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Unauthorized:
+            description: Missing/invalid/revoked token
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Forbidden:
+            description: Authenticated but insufficient role
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        NotFound:
+            description: Resource not found
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        RateLimited:
+            description: Rate limit exceeded
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+
+security:
+    - bearerAuth: []

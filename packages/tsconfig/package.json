@@ -1,0 +1,9 @@
+{
+    "name": "@strafor/tsconfig",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Shared tsconfig base for StraforAI TypeScript packages",
+    "files": [
+        "tsconfig.base.json"
+    ]
+}

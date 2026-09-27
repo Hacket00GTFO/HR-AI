@@ -1,0 +1,35 @@
+{
+    "name": "straforai",
+    "version": "0.0.0",
+    "private": true,
+    "description": "StraforAI monorepo — pnpm workspaces + Turborepo",
+    "packageManager": "pnpm@11.22.0",
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "dev": "turbo run dev",
+        "build": "turbo run build",
+        "test": "turbo run test",
+        "lint": "turbo run lint",
+        "typecheck": "turbo run typecheck",
+        "prepare": "husky"
+    },
+    "devDependencies": {
+        "@strafor/eslint-config": "workspace:*",
+        "eslint": "^9.0.0",
+        "husky": "^9.1.0",
+        "lint-staged": "^16.0.0",
+        "prettier": "^3.0.0",
+        "turbo": "^2.5.0"
+    },
+    "lint-staged": {
+        "*.{js,mjs,cjs,jsx,ts,tsx}": [
+            "prettier --write",
+            "eslint --fix --no-warn-ignored"
+        ],
+        "*.{json,jsonc,yaml,yml,md,css,html}": [
+            "prettier --write"
+        ]
+    }
+}

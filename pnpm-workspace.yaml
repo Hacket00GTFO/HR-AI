@@ -1,0 +1,14 @@
+packages:
+    - 'apps/*'
+    - 'packages/*'
+    - 'tests/*'
+# These ship prebuilt platform binaries via optional deps; their build
+# scripts are unnecessary. Explicitly false keeps `pnpm install` exit-0.
+allowBuilds:
+    '@parcel/watcher': false
+    '@swc/core': false
+    unrs-resolver: false
+    esbuild: true
+    protobufjs: true
+minimumReleaseAgeExclude:
+    - zod@4.6.2

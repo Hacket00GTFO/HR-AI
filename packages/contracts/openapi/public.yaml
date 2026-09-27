@@ -1,0 +1,142 @@
+openapi: 3.0.3
+info:
+    title: StraforAI Public API
+    version: '1.0.0'
+    description: |
+        Anonymous, unauthenticated surface of the StraforAI API — currently
+        the careers "apply" endpoint consumed by `apps/web`
+        (`/careers/[id]` → BFF → `POST /api/public/apply`).
+
+        Everything under `/api/public` is reachable without credentials and is
+        therefore rate-limited MORE aggressively than the authenticated API:
+        keep payloads PII-minimal and never add write endpoints here without a
+        dedicated limiter in `apps/api/routes/public.js`.
+servers:
+    - url: http://localhost:3000
+      description: Local development (legacy monolith)
+tags:
+    - name: public
+      description: Anonymous endpoints
+
+paths:
+    /api/public/apply:
+        post:
+            tags: [public]
+            summary: Submit a job application from the public careers page
+            description: |
+                Creates (or reuses, on unique email) the candidate and attaches
+                a new application with status `pending`, its initial
+                status-history row and candidate skill links — one transaction
+                (`Candidate.createWithVacancy`).
+
+                The request is `multipart/form-data`: candidate fields plus an
+                optional `resume` file. Resumes are stored OUTSIDE the static
+                web root and only served through the authenticated
+                `GET /api/candidates/{id}/resume` endpoint. Files are validated
+                by extension allowlist AND magic-byte sniffing (`.pdf`, `.docx`
+                only — legacy `.doc` is rejected for macro risk).
+
+                Idempotent on re-application: a partial unique index on
+                `applications(candidate_id, vacancy_id) WHERE deleted_at IS
+                NULL` enforces one live application per pair; a conflict is
+                answered `200` instead of `201` so retries/double-submits are
+                safe.
+            security: []
+            parameters: []
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            required:
+                                - first_name
+                                - last_name
+                                - email
+                                - phone
+                                - experience
+                                - education
+                                - location
+                                - skills
+                                - applied_for
+                            properties:
+                                first_name: { type: string, minLength: 1, maxLength: 100 }
+                                last_name: { type: string, minLength: 1, maxLength: 100 }
+                                email: { type: string, format: email, maxLength: 255 }
+                                phone: { type: string, minLength: 1, maxLength: 50 }
+                                linkedin: { type: string, maxLength: 255 }
+                                experience:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 100
+                                    description: Years of experience (string in the form, coerced)
+                                education: { type: string, minLength: 1, maxLength: 255 }
+                                location:
+                                    type: string
+                                    minLength: 1
+                                    maxLength: 255
+                                    description: Free-form "City, Country" (form combines cascading selects)
+                                skills:
+                                    type: string
+                                    minLength: 1
+                                    description: Comma-separated skill names (tags input on the client)
+                                applied_for:
+                                    type: integer
+                                    description: Vacancy id being applied to
+                                current_position: { type: string, maxLength: 255 }
+                                resume:
+                                    type: string
+                                    format: binary
+                                    description: Optional CV — .pdf or .docx, <= 5MB
+                        encoding:
+                            resume:
+                                contentType: application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document
+            responses:
+                '201':
+                    description: Application created
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                required: [application_id, message]
+                                properties:
+                                    application_id: { type: integer, example: 42 }
+                                    message: { type: string, example: 'Application received' }
+                '200':
+                    description: Duplicate application — already received (idempotent)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    message: { type: string, example: 'Application already received' }
+                '400':
+                    description: Schema validation failed
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    error: { type: string, example: 'Validation failed' }
+                                    details:
+                                        type: array
+                                        items:
+                                            type: object
+                                            properties:
+                                                path: { type: string }
+                                                message: { type: string }
+                '404':
+                    description: Vacancy not found
+                '413':
+                    description: Resume exceeds the 5MB limit
+                '415':
+                    description: Disallowed extension or magic bytes that do not match the claimed type
+                '429':
+                    description: |
+                        Rate limited — this endpoint allows 20 submissions per
+                        hour per IP (stricter than the global API limiter).
+                    headers:
+                        RateLimit-Limit: { schema: { type: integer } }
+                        RateLimit-Remaining: { schema: { type: integer } }
+                '503':
+                    description: Database not connected (monolith readiness guard)

@@ -1,0 +1,501 @@
+openapi: 3.1.0
+info:
+    title: StraforAI ai-matching service
+    version: '1.0.0'
+    description: |
+        Contract for `apps/ai-matching` (FastAPI, port 3005).
+
+        Auth: every `/v1/*` endpoint requires either `X-Service-Token`
+        (service-to-service, must equal `SERVICE_AUTH_TOKEN`) or forwarded
+        end-user headers (`X-User-Id` / `X-User-Role` set by the gateway).
+        `/health` and `/ready` are unauthenticated for orchestrators.
+
+        Candidate/vacancy payloads are open objects — the pipeline extracts
+        the fields it knows (skills, experience, education, location, salary,
+        deadline, free text) and ignores the rest.
+servers:
+    - url: http://localhost:3005
+      description: Local development / compose network
+tags:
+    - name: health
+    - name: cv
+    - name: matching
+    - name: jobs
+    - name: skills
+    - name: eval
+
+paths:
+    /health:
+        get:
+            tags: [health]
+            summary: Liveness probe
+            security: []
+            responses:
+                '200':
+                    description: Process is up
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    status: { type: string, enum: [ok] }
+    /ready:
+        get:
+            tags: [health]
+            summary: Readiness — db reachable, plus redis + provider circuit status
+            security: []
+            responses:
+                '200':
+                    description: Service can serve requests
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    status: { type: string, enum: [ready] }
+                                    db: { type: boolean }
+                                    redis: { type: boolean }
+                                    provider: { $ref: '#/components/schemas/ProviderState' }
+                '503': { $ref: '#/components/responses/NotReady' }
+
+    /v1/cv/parse:
+        post:
+            tags: [cv]
+            summary: Parse CV text (or a documents-service document) into a CandidateProfile
+            description: |
+                Sanitizes input (zero-width chars, hidden text, prompt-injection
+                phrases → `injection_suspected` flag), strips PII before any LLM
+                call, then parses via the configured provider (deterministic
+                heuristic parse under `LLM_PROVIDER=mock`).
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/CVParseRequest' }
+            responses:
+                '200':
+                    description: Parsed profile
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/CandidateProfile' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '422': { description: Empty text and no resolvable document_id }
+                '502': { description: DOCUMENTS_URL fetch failed }
+
+    /v1/score:
+        post:
+            tags: [matching]
+            summary: Score one candidate against one vacancy
+            description: |
+                Computes the versioned feature score (skills jaccard on canonical
+                ids, experience decay, education ordinal, BM25-lite text, vector
+                cosine when embeddings exist). Persists a `match_scores` row and
+                emits `strafor.matching.score_computed`. A repeated call for the
+                same (candidate, vacancy, model_version, prompt_version) is served
+                from persistence (`cached: true`).
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/ScoreRequest' }
+            responses:
+                '200':
+                    description: Match result
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/ScoreResponse' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /v1/vacancies/{vacancyId}/rank:
+        post:
+            tags: [matching]
+            summary: Rank candidates for a vacancy
+            description: |
+                Hard filters (remote/location/salary overlap/deadline — skipped
+                when the field is absent) → BM25+vector retrieval → full scoring
+                → optional LLM rerank of top-K (≤30). Degrades to `rule_based`
+                when the LLM provider is unavailable or over budget.
+
+                Returns 202-style `JobAccepted` when `async: true` or the batch
+                exceeds `ASYNC_RANK_THRESHOLD` (default 50); poll
+                `GET /v1/jobs/{jobId}` for the `RankResponse` result.
+            parameters:
+                - name: vacancyId
+                  in: path
+                  required: true
+                  schema: { type: integer }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/RankRequest' }
+            responses:
+                '200':
+                    description: Ranked list (sync) or accepted job (async)
+                    content:
+                        application/json:
+                            schema:
+                                oneOf:
+                                    - $ref: '#/components/schemas/RankResponse'
+                                    - $ref: '#/components/schemas/JobAccepted'
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '503': { description: Job store or broker unavailable for async rank }
+
+    /v1/jobs/{jobId}:
+        get:
+            tags: [jobs]
+            summary: Poll an async job
+            parameters:
+                - name: jobId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Job status; `result` carries the RankResponse when done
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/JobStatus' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '503': { description: Job store unavailable }
+
+    /v1/scores/{candidateId}/{vacancyId}/explain:
+        get:
+            tags: [matching]
+            summary: Explanation for a persisted score (current model+prompt version)
+            parameters:
+                - name: candidateId
+                  in: path
+                  required: true
+                  schema: { type: integer }
+                - name: vacancyId
+                  in: path
+                  required: true
+                  schema: { type: integer }
+            responses:
+                '200':
+                    description: Score + subscores + explanation
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/ExplainResponse' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '404': { description: No persisted score for this pair/version }
+                '503': { description: Score store unavailable }
+
+    /v1/eval/run:
+        post:
+            tags: [eval]
+            summary: Run one evaluation scorer over a bounded synthetic dataset
+            description: |
+                Admin/CI convenience endpoint around the `evaluation` package
+                (which must be present in the image — 501 otherwise). Runs one
+                scorer (`legacy_heuristic`, `bm25_filters`, `hybrid_no_llm`,
+                `full_pipeline`) over a deterministic synthetic dataset of
+                `n_vacancies` queries x 7 labeled pairs, optionally persists the
+                run to `eval_results`, and emits
+                `strafor.matching.eval_run_completed`.
+
+                The full harness — all baselines, markdown report, prompt
+                regression gate, fairness checks — is CLI-driven:
+                `python -m evaluation.runner|prompt_regression|fairness` (see
+                `apps/ai-matching/docs/eval/README.md`).
+            requestBody:
+                required: false
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/EvalRunRequest' }
+            responses:
+                '200':
+                    description: Evaluation metrics for the chosen scorer
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/EvalRunResponse' }
+                '400': { description: Unknown scorer name }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '501': { description: evaluation package not installed in this image }
+
+    /v1/skills/canonical:
+        get:
+            tags: [skills]
+            summary: Autocomplete over the canonical skills taxonomy
+            parameters:
+                - name: q
+                  in: query
+                  schema: { type: string, default: '' }
+                - name: limit
+                  in: query
+                  schema: { type: integer, default: 10, maximum: 50 }
+            responses:
+                '200':
+                    description: Matching canonical skills
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items: { $ref: '#/components/schemas/SkillEntry' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+    securitySchemes:
+        serviceToken:
+            type: apiKey
+            in: header
+            name: X-Service-Token
+        userHeaders:
+            type: apiKey
+            in: header
+            name: X-User-Id
+            description: Gateway-forwarded end-user identity (+ X-User-Role)
+    security:
+        - serviceToken: []
+        - userHeaders: []
+
+    schemas:
+        ProviderState:
+            type: object
+            properties:
+                provider: { type: string, enum: [mock, openai, anthropic] }
+                circuit: { type: string, enum: [closed, open, half_open] }
+                budget_exceeded: { type: boolean }
+                degrade_reason: { type: string, nullable: true }
+
+        CVParseRequest:
+            type: object
+            properties:
+                text: { type: string, nullable: true }
+                document_id:
+                    oneOf: [{ type: string }, { type: integer }, { type: 'null' }]
+                    description: Resolved via DOCUMENTS_URL when text is absent
+
+        CandidateProfile:
+            type: object
+            properties:
+                experience_years: { type: number, default: 0 }
+                education_level:
+                    type: string
+                    enum: [none, high_school, bachelor, master, phd]
+                    default: none
+                skills_raw: { type: array, items: { type: string } }
+                skills_canonical: { type: array, items: { type: string } }
+                skills_unresolved: { type: array, items: { type: string } }
+                languages: { type: array, items: { type: string } }
+                certifications: { type: array, items: { type: string } }
+                seniority: { type: string, nullable: true }
+                flags: { type: array, items: { type: string } }
+                injection_suspected: { type: boolean, default: false }
+                source: { type: string, default: rule_based }
+                prompt_version: { type: string }
+
+        ScoreRequest:
+            type: object
+            required: [candidate, vacancy]
+            properties:
+                candidate:
+                    type: object
+                    description: id, skills, experience, education, location, free text…
+                vacancy:
+                    type: object
+                    description: id, skills_required, experience_level, requirements, salary_max, remote_option, application_deadline…
+
+        ScoreResponse:
+            type: object
+            required: [score]
+            properties:
+                candidate_id: {}
+                vacancy_id: {}
+                score: { type: number, minimum: 0, maximum: 1 }
+                subscores:
+                    type: object
+                    additionalProperties: { type: number, nullable: true }
+                    description: skills / experience / education / text / vector (null = not computable)
+                explanation: { type: object }
+                red_flags: { type: array, items: { type: string } }
+                source: { type: string, enum: [rule_based, hybrid, llm_rerank] }
+                model_version: { type: string }
+                prompt_version: { type: string }
+                embedding_version: { type: string }
+                cached: { type: boolean, default: false }
+                budget_exceeded: { type: boolean, default: false }
+
+        RankRequest:
+            type: object
+            required: [vacancy]
+            properties:
+                vacancy: { type: object }
+                candidates: { type: array, items: { type: object } }
+                async:
+                    type: boolean
+                    description: Force async execution via Celery job
+                top_k: { type: integer, maximum: 30, description: Rerank/scoring shortlist cap }
+                min_score: { type: number, minimum: 0, maximum: 1 }
+
+        RankedCandidate:
+            type: object
+            required: [rank, score]
+            properties:
+                rank: { type: integer }
+                candidate_id: {}
+                score: { type: number, minimum: 0, maximum: 1 }
+                subscores:
+                    type: object
+                    additionalProperties: { type: number, nullable: true }
+                match_level: { type: string }
+                explanation: { type: object }
+                red_flags: { type: array, items: { type: string } }
+
+        RankResponse:
+            type: object
+            properties:
+                vacancy_id: {}
+                results:
+                    type: array
+                    items: { $ref: '#/components/schemas/RankedCandidate' }
+                excluded:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            candidate_id: {}
+                            reasons: { type: array, items: { type: string } }
+                    description: Candidates removed by hard filters
+                not_evaluated:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            candidate_id: {}
+                            reason:
+                                type: string
+                                enum: [below_top_k, scoring_error]
+                            detail: { type: string }
+                    description: Candidates that passed hard filters but were never scored
+                below_min_score:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            candidate_id: {}
+                            score: { type: number, minimum: 0, maximum: 1 }
+                            reason: { type: string, enum: [below_min_score] }
+                    description: Scored candidates dropped by the min_score post-filter
+                degradations:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            feature: { type: string, enum: [vector, llm_rerank] }
+                            reason: { type: string }
+                    description: Pipeline features that degraded during this run
+                counts:
+                    type: object
+                    properties:
+                        received: { type: integer }
+                        hard_filtered: { type: integer }
+                        scored: { type: integer }
+                        not_evaluated: { type: integer }
+                    description: Pipeline funnel counts for this batch
+                evaluated:
+                    type: integer
+                    description: len(results) — candidates that received a final score
+                source: { type: string, enum: [rule_based, hybrid, llm_rerank] }
+                model_version: { type: string }
+                prompt_version: { type: string }
+                embedding_version: { type: string }
+                budget_exceeded: { type: boolean }
+
+        JobAccepted:
+            type: object
+            required: [job_id]
+            properties:
+                job_id: { type: string, format: uuid }
+                status: { type: string, enum: [queued] }
+
+        JobStatus:
+            type: object
+            required: [job_id, type, status]
+            properties:
+                job_id: { type: string }
+                type: { type: string }
+                status: { type: string, enum: [queued, running, done, failed] }
+                result:
+                    type: object
+                    nullable: true
+                    description: RankResponse payload when status=done
+                error: { type: string, nullable: true }
+                attempts: { type: integer }
+                created_at: { type: string, format: date-time, nullable: true }
+                updated_at: { type: string, format: date-time, nullable: true }
+
+        SkillEntry:
+            type: object
+            required: [name]
+            properties:
+                name: { type: string }
+                aliases: { type: array, items: { type: string } }
+                esco_uri: { type: string, nullable: true }
+                category: { type: string, default: general }
+
+        ExplainResponse:
+            type: object
+            required: [score]
+            properties:
+                candidate_id: {}
+                vacancy_id: {}
+                score: { type: number, minimum: 0, maximum: 1 }
+                subscores: { type: object }
+                explanation: { type: object }
+                source: { type: string }
+                model_version: { type: string }
+                created_at: { type: string, format: date-time, nullable: true }
+
+        EvalRunRequest:
+            type: object
+            properties:
+                scorer:
+                    type: string
+                    enum: [legacy_heuristic, bm25_filters, hybrid_no_llm, full_pipeline]
+                    default: full_pipeline
+                seed: { type: integer, default: 13 }
+                n_vacancies:
+                    type: integer
+                    default: 12
+                    minimum: 1
+                    maximum: 30
+                    description: Synthetic queries to generate (x7 pairs each)
+                persist:
+                    type: boolean
+                    default: false
+                    description: Write the run to eval_results (needs DB)
+
+        EvalRunResponse:
+            type: object
+            properties:
+                scorer: { type: string }
+                dataset: { type: string, nullable: true }
+                dataset_version: { type: string, nullable: true }
+                model_version: { type: string }
+                prompt_version: { type: string }
+                n_queries: { type: integer }
+                n_pairs: { type: integer }
+                metrics:
+                    type: object
+                    additionalProperties: { type: number, nullable: true }
+                    description: 'ndcg_at_5/10, precision_at_5, recall_at_5, mrr, auc (null = undefined)'
+                persisted: { type: boolean }
+
+    responses:
+        Unauthorized:
+            description: Missing/invalid X-Service-Token or X-User-* headers
+        NotReady:
+            description: Database unreachable — service cannot score
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            db: { type: boolean }
+                            redis: { type: boolean }
+                            provider: { $ref: '#/components/schemas/ProviderState' }
+        NotFound:
+            description: Resource not found

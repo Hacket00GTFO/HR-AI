@@ -1,0 +1,264 @@
+openapi: 3.1.0
+info:
+    title: StraforAI Documents & Resumes API
+    version: 1.0.0
+    description: >
+        Document storage and text-extraction microservice. Stores resume files
+        in an S3-compatible object store (MinIO), deduplicates by sha256,
+        extracts text (PDF/DOCX) asynchronously and exposes the extracted text
+        to downstream services (ai-matching).
+        Authentication: the gateway injects `X-User-Id` / `X-User-Role` headers;
+        the service trusts them but requires their presence on all /v1 routes.
+        Errors use the shared envelope `{ "error": string, "details"?: any }`.
+servers:
+    - url: http://localhost:3004
+      description: Local development
+tags:
+    - name: documents
+    - name: meta
+paths:
+    /v1/documents:
+        post:
+            tags: [documents]
+            summary: Upload a document (multipart)
+            description: >
+                Accepts a single PDF or DOCX file (field `file`). Magic bytes
+                are validated — renamed executables are rejected. Files are
+                deduplicated by sha256: re-uploading identical content returns
+                the existing document with `deduplicated: true`.
+            parameters:
+                - $ref: '#/components/parameters/XUserId'
+                - $ref: '#/components/parameters/XUserRole'
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            required: [file]
+                            properties:
+                                file:
+                                    type: string
+                                    format: binary
+                                    description: PDF or DOCX, max 10 MB
+                                candidateId:
+                                    type: integer
+                                    description: Optional owner candidate id (plain int, no cross-service FK)
+                                kind:
+                                    type: string
+                                    default: resume
+            responses:
+                '201':
+                    description: Document stored (or deduplicated)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DocumentUploadResponse'
+                '400': { $ref: '#/components/responses/BadRequest' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '413': { $ref: '#/components/responses/PayloadTooLarge' }
+                '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+    /v1/documents/{id}:
+        get:
+            tags: [documents]
+            summary: Document metadata
+            parameters:
+                - $ref: '#/components/parameters/DocumentId'
+                - $ref: '#/components/parameters/XUserId'
+                - $ref: '#/components/parameters/XUserRole'
+            responses:
+                '200':
+                    description: Document metadata
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Document'
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [documents]
+            summary: Soft-delete a document
+            description: Marks the row deleted and removes the S3 object asynchronously.
+            parameters:
+                - $ref: '#/components/parameters/DocumentId'
+                - $ref: '#/components/parameters/XUserId'
+                - $ref: '#/components/parameters/XUserRole'
+            responses:
+                '204': { description: Deleted }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /v1/documents/{id}/download:
+        get:
+            tags: [documents]
+            summary: Presigned download URL
+            description: Returns a 15-minute presigned GET URL. The bucket is never public.
+            parameters:
+                - $ref: '#/components/parameters/DocumentId'
+                - $ref: '#/components/parameters/XUserId'
+                - $ref: '#/components/parameters/XUserRole'
+            responses:
+                '200':
+                    description: Presigned URL
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                required: [url, expiresInSeconds]
+                                properties:
+                                    url: { type: string, format: uri }
+                                    expiresInSeconds: { type: integer, example: 900 }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /v1/documents/{id}/text:
+        get:
+            tags: [documents]
+            summary: Extracted text
+            description: >
+                Returns extracted plain text once `status = parsed`.
+                Returns 404 while parsing or when parsing failed.
+            parameters:
+                - $ref: '#/components/parameters/DocumentId'
+                - $ref: '#/components/parameters/XUserId'
+                - $ref: '#/components/parameters/XUserRole'
+            responses:
+                '200':
+                    description: Extracted text
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                required: [documentId, text]
+                                properties:
+                                    documentId: { type: string, format: uuid }
+                                    text: { type: string }
+                                    pageCount: { type: integer, nullable: true }
+                                    extractedAt: { type: string, format: date-time }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /v1/documents/{id}/reparse:
+        post:
+            tags: [documents]
+            summary: Re-enqueue text extraction
+            parameters:
+                - $ref: '#/components/parameters/DocumentId'
+                - $ref: '#/components/parameters/XUserId'
+                - $ref: '#/components/parameters/XUserRole'
+            responses:
+                '202':
+                    description: Parse job enqueued
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    documentId: { type: string, format: uuid }
+                                    status: { type: string, example: parsing }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /health:
+        get:
+            tags: [meta]
+            summary: Liveness probe
+            responses:
+                '200':
+                    description: Process is alive
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    status: { type: string, example: ok }
+    /ready:
+        get:
+            tags: [meta]
+            summary: Readiness probe (db + S3 bucket reachable)
+            responses:
+                '200': { description: Ready }
+                '503': { description: Dependency unavailable }
+components:
+    parameters:
+        DocumentId:
+            name: id
+            in: path
+            required: true
+            schema: { type: string, format: uuid }
+        XUserId:
+            name: X-User-Id
+            in: header
+            required: true
+            description: Injected by the gateway.
+            schema: { type: integer }
+        XUserRole:
+            name: X-User-Role
+            in: header
+            required: true
+            description: Injected by the gateway. `admin`/`hr` may access non-owned documents.
+            schema: { type: string, enum: [admin, hr, candidate] }
+    schemas:
+        Document:
+            type: object
+            required: [id, kind, originalName, mime, sizeBytes, sha256, status]
+            properties:
+                id: { type: string, format: uuid }
+                candidateId: { type: integer, nullable: true }
+                kind: { type: string, example: resume }
+                originalName: { type: string }
+                mime: { type: string }
+                sizeBytes: { type: integer }
+                sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+                s3Key: { type: string }
+                status:
+                    type: string
+                    enum: [uploaded, parsing, parsed, failed]
+                parseVersion: { type: string, nullable: true }
+                error: { type: string, nullable: true }
+                createdAt: { type: string, format: date-time }
+                updatedAt: { type: string, format: date-time }
+        DocumentUploadResponse:
+            allOf:
+                - $ref: '#/components/schemas/Document'
+                - type: object
+                  properties:
+                      deduplicated: { type: boolean, default: false }
+        Error:
+            type: object
+            required: [error]
+            properties:
+                error: { type: string }
+                details: {}
+    responses:
+        BadRequest:
+            description: Validation failed
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Unauthorized:
+            description: Missing identity headers
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Forbidden:
+            description: Not the owner and not admin/hr
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        NotFound:
+            description: Document not found / not parsed yet
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        PayloadTooLarge:
+            description: File exceeds 10 MB
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        UnsupportedMediaType:
+            description: Extension or magic bytes not allowed
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }

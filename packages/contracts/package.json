@@ -1,0 +1,17 @@
+{
+    "name": "@strafor/contracts",
+    "version": "0.1.0",
+    "private": true,
+    "description": "StraforAI service contracts: OpenAPI spec for the legacy API surface and Zod event schemas for the future event bus",
+    "main": "events/index.js",
+    "scripts": {
+        "lint": "eslint ."
+    },
+    "dependencies": {
+        "zod": "^4.6.2"
+    },
+    "devDependencies": {
+        "@strafor/eslint-config": "workspace:*",
+        "eslint": "^9.0.0"
+    }
+}

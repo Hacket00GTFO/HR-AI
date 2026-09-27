@@ -1,0 +1,314 @@
+openapi: 3.1.0
+info:
+    title: StraforAI API gateway
+    version: '1.0.0'
+    description: |
+        Contract for `apps/gateway` — the edge reverse proxy. Terminates CORS,
+        rate-limits, enforces RS256 access tokens on `/api/v1/**` (JWKS from
+        `IDENTITY_JWKS_URL` + Redis `bl:<jti>` revocation check), then proxies
+        to the owning service.
+
+        ## Routing table (`/api` prefix stripped for v1 upstreams)
+
+        | Gateway path                    | Upstream            | Env var            |
+        | ------------------------------- | ------------------- | ------------------ |
+        | /api/v1/auth\|users\|settings/* | identity-auth :3001 | IDENTITY_URL       |
+        | /api/v1/documents/*             | documents    :3004  | DOCUMENTS_URL      |
+        | /api/v1/notifications/*         | notifications :3007 | NOTIFICATIONS_URL  |
+        | /api/v1/match\|ai/*             | ai-matching  :3005  | AI_SERVICE_URL     |
+        | /api/v1/vacancies/*             | vacancies    :3002  | VACANCIES_URL      |
+        | /api/v1/candidates\|applications/* | candidates :3003 | CANDIDATES_URL   |
+        | other /api/*                    | monolith     :3000  | API_URL (path kept)|
+        | non-/api/*                      | monolith/static     | STATIC_FALLBACK_URL|
+
+        Unset service URLs fall back to `API_URL`.
+
+        ## Auth guard on /api/v1/**
+
+        Public allowlist (no token): `auth/login`, `auth/refresh`,
+        `auth/password/forgot`, `auth/password/reset`, `public/*`, `health`.
+        Everything else needs `Authorization: Bearer <RS256 access token>`.
+        Verified claims are forwarded upstream as `X-User-Id`, `X-User-Role`,
+        `X-User-Location` headers; client-supplied copies are always stripped.
+
+        Errors: `{ "error": string }` — 401 missing/invalid/revoked token,
+        429 rate limited, 502 upstream unreachable, 503 JWKS unreachable.
+servers:
+    - url: http://localhost:8080
+      description: Local development
+    - url: http://gateway:8080
+      description: docker-compose network
+tags:
+    - name: infra
+    - name: proxy
+
+paths:
+    /health:
+        get:
+            tags: [infra]
+            summary: Liveness probe — always 200 while the process runs
+            security: []
+            responses:
+                '200': { $ref: '#/components/responses/HealthOk' }
+    /ready:
+        get:
+            tags: [infra]
+            summary: Readiness probe — reports redis status
+            security: []
+            responses:
+                '200': { $ref: '#/components/responses/ReadyOk' }
+                '503': { $ref: '#/components/responses/ReadyDegraded' }
+
+    /api/v1/auth/login:
+        post:
+            tags: [proxy]
+            summary: Proxied → identity /v1/auth/login (public)
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/auth/login' }
+            security: []
+            responses:
+                '200': { description: 'See identity.yaml /v1/auth/login' }
+                '429': { $ref: '#/components/responses/RateLimited' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/auth/refresh:
+        post:
+            tags: [proxy]
+            summary: Proxied → identity /v1/auth/refresh (public)
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/auth/refresh' }
+            security: []
+            responses:
+                '200': { description: 'See identity.yaml /v1/auth/refresh' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/auth/password/{action}:
+        post:
+            tags: [proxy]
+            summary: Proxied → identity /v1/auth/password/* (public)
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/auth/password/{action}' }
+            security: []
+            parameters:
+                - name: action
+                  in: path
+                  required: true
+                  schema: { type: string, enum: [forgot, reset, change] }
+            responses:
+                '200': { description: 'See identity.yaml /v1/auth/password/*' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/auth/{action}:
+        post:
+            tags: [proxy]
+            summary: Proxied → identity /v1/auth/* (token required unless allowlisted)
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/auth/{action}' }
+            parameters:
+                - name: action
+                  in: path
+                  required: true
+                  schema: { type: string, enum: [logout, register, introspect] }
+            responses:
+                '200': { description: 'See identity.yaml /v1/auth/*' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/users:
+        get:
+            tags: [proxy]
+            summary: Proxied → identity /v1/users
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/users' }
+            responses:
+                '200': { description: 'See identity.yaml /v1/users' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+        post:
+            tags: [proxy]
+            summary: Proxied → identity /v1/users
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/users' }
+            responses:
+                '201': { description: 'See identity.yaml /v1/users' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/users/{id}:
+        get:
+            tags: [proxy]
+            summary: Proxied → identity /v1/users/{id}
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/users/{id}' }
+            parameters:
+                - $ref: '#/components/parameters/IdParam'
+            responses:
+                '200': { description: 'See identity.yaml /v1/users/{id}' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+        put:
+            tags: [proxy]
+            summary: Proxied → identity /v1/users/{id}
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/users/{id}' }
+            parameters:
+                - $ref: '#/components/parameters/IdParam'
+            responses:
+                '200': { description: 'See identity.yaml /v1/users/{id}' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+        delete:
+            tags: [proxy]
+            summary: Proxied → identity /v1/users/{id}
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/users/{id}' }
+            parameters:
+                - $ref: '#/components/parameters/IdParam'
+            responses:
+                '200': { description: 'See identity.yaml /v1/users/{id}' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/settings:
+        get:
+            tags: [proxy]
+            summary: Proxied → identity /v1/settings
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/settings' }
+            responses:
+                '200': { description: 'See identity.yaml /v1/settings' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+        put:
+            tags: [proxy]
+            summary: Proxied → identity /v1/settings
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/settings' }
+            responses:
+                '200': { description: 'See identity.yaml /v1/settings' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/settings/integrations:
+        get:
+            tags: [proxy]
+            summary: Proxied → identity /v1/settings/integrations
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/settings/integrations' }
+            responses:
+                '200': { description: 'See identity.yaml /v1/settings/integrations' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+        put:
+            tags: [proxy]
+            summary: Proxied → identity /v1/settings/integrations
+            x-upstream: { service: identity-auth, env: IDENTITY_URL, rewrite: '/v1/settings/integrations' }
+            responses:
+                '200': { description: 'See identity.yaml /v1/settings/integrations' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/documents/{path}:
+        get:
+            tags: [proxy]
+            summary: Proxied → documents service
+            x-upstream:
+                { service: documents-resumes, env: DOCUMENTS_URL, rewrite: '/v1/documents/{path}', fallback: API_URL }
+            parameters:
+                - $ref: '#/components/parameters/WildcardParam'
+            responses:
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/notifications/{path}:
+        get:
+            tags: [proxy]
+            summary: Proxied → notifications service
+            x-upstream:
+                {
+                    service: notifications,
+                    env: NOTIFICATIONS_URL,
+                    rewrite: '/v1/notifications/{path}',
+                    fallback: API_URL
+                }
+            parameters:
+                - $ref: '#/components/parameters/WildcardParam'
+            responses:
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/match/{path}:
+        get:
+            tags: [proxy]
+            summary: Proxied → ai-matching service
+            x-upstream: { service: ai-matching, env: AI_SERVICE_URL, rewrite: '/v1/match/{path}', fallback: API_URL }
+            parameters:
+                - $ref: '#/components/parameters/WildcardParam'
+            responses:
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/v1/vacancies/{path}:
+        get:
+            tags: [proxy]
+            summary: Proxied → vacancies service (falls back to monolith)
+            x-upstream: { service: vacancies, env: VACANCIES_URL, rewrite: '/v1/vacancies/{path}', fallback: API_URL }
+            parameters:
+                - $ref: '#/components/parameters/WildcardParam'
+            responses:
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '502': { $ref: '#/components/responses/BadGateway' }
+    /api/{path}:
+        get:
+            tags: [proxy]
+            summary: Legacy monolith surface — forwarded verbatim (path kept)
+            x-upstream: { service: api, env: API_URL, rewrite: none }
+            security: []
+            parameters:
+                - $ref: '#/components/parameters/WildcardParam'
+            responses:
+                '502': { $ref: '#/components/responses/BadGateway' }
+
+components:
+    parameters:
+        IdParam:
+            name: id
+            in: path
+            required: true
+            schema: { type: integer, minimum: 1 }
+        WildcardParam:
+            name: path
+            in: path
+            required: true
+            schema: { type: string }
+    schemas:
+        Error:
+            type: object
+            required: [error]
+            properties:
+                error: { type: string }
+                details: {}
+    responses:
+        HealthOk:
+            description: Gateway healthy
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            status: { type: string, example: ok }
+                            service: { type: string, example: gateway }
+                            timestamp: { type: string, format: date-time }
+        ReadyOk:
+            description: Dependencies reachable
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            status: { type: string, example: ready }
+                            checks:
+                                type: object
+                                properties:
+                                    redis: { type: string, example: up }
+        ReadyDegraded:
+            description: A dependency is unreachable
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Unauthorized:
+            description: Missing, malformed, non-RS256, or blacklisted token
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        BadGateway:
+            description: Upstream service unreachable or timed out (PROXY_TIMEOUT_MS)
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        required: [error]
+                        properties:
+                            error: { type: string, example: 'Upstream service unavailable' }
+        RateLimited:
+            description: Rate limit exceeded (login 20/15min; /api 600/15min — Redis-backed when REDIS_URL set)
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }

@@ -1,0 +1,438 @@
+openapi: 3.1.0
+info:
+    title: StraforAI Recruitment Core API
+    version: 1.0.0
+    description: >
+        Recruitment core microservice — vacancies, candidates and
+        applications extracted from the monolith
+        (docs/extraction/recruitment-core.md). End users reach it through the
+        gateway (`/api/v1/{vacancies,candidates,applications,public}`), which
+        injects `X-User-Id` / `X-User-Role` after JWT validation; other
+        services authenticate with `X-Service-Token`.
+        Resume files are owned by documents-resumes — upload there first and
+        pass `resumeDocumentId`; `GET /v1/candidates/{id}/resume` returns a
+        302 to a signed URL.
+        Errors use the shared envelope `{ "error": string, "details"?: any }`.
+
+        TRANSITION NOTE: during the strangler migration the service keeps the
+        monolith's legacy wire shapes (snake_case fields, `applied_for` int or
+        `{ _id, title }`, multipart `resume` upload on POST /v1/candidates,
+        `{ application_id }` on apply, no pagination envelope). This document
+        describes the TARGET contract; the shapes normalized here
+        (`vacancyId`, `resumeDocumentId`, camelCase) become the wire once the
+        gateway compat shim is dropped post-soak.
+servers:
+    - url: http://localhost:3009
+      description: Local development
+tags:
+    - name: vacancies
+    - name: candidates
+    - name: public
+    - name: meta
+paths:
+    /v1/vacancies:
+        get:
+            tags: [vacancies]
+            summary: List vacancies
+            parameters:
+                - { name: status, in: query, schema: { type: string, enum: [open, closed] } }
+                - { name: department, in: query, schema: { type: string } }
+                - { name: location, in: query, schema: { type: string } }
+                - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+                - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+            responses:
+                '200':
+                    description: Paginated vacancies
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Vacancy' }
+                                    page: { type: integer }
+                                    pageSize: { type: integer }
+                                    total: { type: integer }
+        post:
+            tags: [vacancies]
+            summary: Create a vacancy (HR)
+            parameters:
+                - { name: X-User-Id, in: header, required: true, schema: { type: integer } }
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [title, department, location, type]
+                            properties:
+                                title: { type: string, minLength: 1 }
+                                department: { type: string, minLength: 1 }
+                                location: { type: string, minLength: 1 }
+                                type: { type: string, minLength: 1 }
+                                experienceLevel: { type: string }
+                                description: { type: string }
+                                requirements: { type: string }
+                                responsibilities: { type: string }
+                                salaryMin: { type: integer }
+                                salaryMax: { type: integer }
+                                currency: { type: string, minLength: 3, maxLength: 3 }
+                                remoteOption: { type: string }
+                                skillsRequired:
+                                    type: array
+                                    items: { type: string }
+                                applicationDeadline: { type: string, format: date }
+            responses:
+                '201':
+                    description: Created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Vacancy' }
+                '400': { $ref: '#/components/responses/BadRequest' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /v1/vacancies/{id}:
+        get:
+            tags: [vacancies]
+            summary: Vacancy detail
+            parameters: [{ $ref: '#/components/parameters/Id' }]
+            responses:
+                '200':
+                    description: Vacancy
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Vacancy' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        put:
+            tags: [vacancies]
+            summary: Update a vacancy (HR)
+            parameters:
+                - { $ref: '#/components/parameters/Id' }
+                - { name: X-User-Id, in: header, required: true, schema: { type: integer } }
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/Vacancy' }
+            responses:
+                '200':
+                    description: Updated vacancy
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Vacancy' }
+                '400': { $ref: '#/components/responses/BadRequest' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [vacancies]
+            summary: Close/delete a vacancy (HR, soft delete)
+            parameters:
+                - { $ref: '#/components/parameters/Id' }
+                - { name: X-User-Id, in: header, required: true, schema: { type: integer } }
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+            responses:
+                '204': { description: Closed }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /v1/vacancies/{id}/candidates:
+        get:
+            tags: [vacancies]
+            summary: Candidates applied to a vacancy (HR)
+            parameters:
+                - { $ref: '#/components/parameters/Id' }
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+                - { name: status, in: query, schema: { type: string, enum: [pending, interview, accepted, rejected] } }
+            responses:
+                '200':
+                    description: Applications joined with candidate data
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items: { $ref: '#/components/schemas/Application' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /v1/vacancies/{id}/applications:
+        get:
+            tags: [vacancies]
+            summary: Application records for a vacancy (HR)
+            parameters: [{ $ref: '#/components/parameters/Id' }]
+            responses:
+                '200':
+                    description: Applications with status history
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items: { $ref: '#/components/schemas/Application' }
+    /v1/vacancies/{id}/top-candidates:
+        get:
+            tags: [vacancies]
+            summary: Ranked candidates by precomputed match score (HR)
+            description: >
+                Reads `match_scores` produced by ai-matching — never recomputes.
+                Scores are versioned (`modelVersion`, `promptVersion`).
+            parameters:
+                - { $ref: '#/components/parameters/Id' }
+                - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 10 } }
+            responses:
+                '200':
+                    description: Candidates ordered by score desc
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    allOf:
+                                        - { $ref: '#/components/schemas/Application' }
+                                        - type: object
+                                          properties:
+                                              matchScore: { type: number, minimum: 0, maximum: 1 }
+                                              modelVersion: { type: string }
+    /v1/candidates:
+        get:
+            tags: [candidates]
+            summary: List candidates (HR)
+            parameters:
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+                - { name: status, in: query, schema: { type: string, enum: [pending, interview, accepted, rejected] } }
+                - { name: q, in: query, schema: { type: string }, description: Name/email/skills search }
+                - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+                - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+            responses:
+                '200':
+                    description: Paginated candidates
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Candidate' }
+                                    page: { type: integer }
+                                    pageSize: { type: integer }
+                                    total: { type: integer }
+        post:
+            tags: [candidates]
+            summary: Create a candidate + application (HR)
+            parameters:
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [firstName, lastName, email, vacancyId]
+                            properties:
+                                firstName: { type: string, minLength: 1 }
+                                lastName: { type: string, minLength: 1 }
+                                email: { type: string, format: email }
+                                phone: { type: string }
+                                experience: { type: integer, minimum: 0 }
+                                education: { type: string }
+                                skills:
+                                    type: array
+                                    items: { type: string }
+                                vacancyId: { type: integer }
+                                resumeDocumentId: { type: string, format: uuid }
+            responses:
+                '201':
+                    description: Created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Candidate' }
+                '400': { $ref: '#/components/responses/BadRequest' }
+                '409': { description: Email already applied to this vacancy }
+    /v1/candidates/{id}/status:
+        put:
+            tags: [candidates]
+            summary: Change application status (HR)
+            parameters:
+                - { $ref: '#/components/parameters/Id' }
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [status]
+                            properties:
+                                status: { type: string, enum: [pending, interview, accepted, rejected] }
+                                vacancyId: { type: integer }
+            responses:
+                '200':
+                    description: Updated application
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Application' }
+                '400': { $ref: '#/components/responses/BadRequest' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /v1/candidates/{id}/feedback:
+        put:
+            tags: [candidates]
+            summary: Record hiring decision + feedback (HR)
+            parameters:
+                - { $ref: '#/components/parameters/Id' }
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [decision, feedback]
+                            properties:
+                                decision: { type: string, enum: [hired, rejected, offer_extended] }
+                                feedback: { type: string, minLength: 1 }
+                                vacancyId: { type: integer }
+            responses:
+                '200': { description: Recorded }
+                '400': { $ref: '#/components/responses/BadRequest' }
+    /v1/candidates/{id}/resume:
+        get:
+            tags: [candidates]
+            summary: Download resume (HR)
+            description: 302 redirect to a short-lived signed URL issued by documents-resumes.
+            parameters:
+                - { $ref: '#/components/parameters/Id' }
+                - { name: X-User-Role, in: header, required: true, schema: { type: string, enum: [admin, hr] } }
+            responses:
+                '302': { description: Redirect to signed URL }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /v1/public/apply:
+        post:
+            tags: [public]
+            summary: Public application (careers portal — no auth)
+            description: Rate-limited at the gateway; creates candidate + application + optional resume reference.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [firstName, lastName, email, vacancyId]
+                            properties:
+                                firstName: { type: string, minLength: 1 }
+                                lastName: { type: string, minLength: 1 }
+                                email: { type: string, format: email }
+                                phone: { type: string }
+                                vacancyId: { type: integer }
+                                resumeDocumentId: { type: string, format: uuid }
+            responses:
+                '201':
+                    description: Application received
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    applicationId: { type: integer }
+                '400': { $ref: '#/components/responses/BadRequest' }
+                '429': { description: Rate limited }
+    /health:
+        get:
+            tags: [meta]
+            summary: Liveness probe
+            responses:
+                '200': { description: Process is alive }
+    /ready:
+        get:
+            tags: [meta]
+            summary: Readiness probe (db + broker)
+            responses:
+                '200': { description: Ready }
+                '503': { description: Dependency unavailable }
+components:
+    parameters:
+        Id:
+            name: id
+            in: path
+            required: true
+            schema: { type: integer, minimum: 1 }
+    schemas:
+        Vacancy:
+            type: object
+            properties:
+                id: { type: integer }
+                title: { type: string }
+                department: { type: string }
+                location: { type: string }
+                type: { type: string }
+                experienceLevel: { type: string, nullable: true }
+                description: { type: string, nullable: true }
+                skillsRequired:
+                    type: array
+                    items: { type: string }
+                status: { type: string, enum: [open, closed] }
+                createdBy: { type: integer, nullable: true }
+                createdAt: { type: string, format: date-time }
+                updatedAt: { type: string, format: date-time }
+        Candidate:
+            type: object
+            properties:
+                id: { type: integer }
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string, nullable: true }
+                experience: { type: integer, nullable: true }
+                education: { type: string, nullable: true }
+                skills:
+                    type: array
+                    items: { type: string }
+                status: { type: string, enum: [pending, interview, accepted, rejected] }
+                resumeDocumentId: { type: string, format: uuid, nullable: true }
+                appliedAt: { type: string, format: date-time }
+        Application:
+            type: object
+            properties:
+                id: { type: integer }
+                candidateId: { type: integer }
+                vacancyId: { type: integer }
+                status: { type: string, enum: [pending, interview, accepted, rejected] }
+                candidate: { $ref: '#/components/schemas/Candidate' }
+                vacancy:
+                    type: object
+                    properties:
+                        id: { type: integer }
+                        title: { type: string }
+                statusHistory:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            from: { type: string, nullable: true }
+                            to: { type: string }
+                            changedAt: { type: string, format: date-time }
+                            changedBy: { type: integer, nullable: true }
+                appliedAt: { type: string, format: date-time }
+        Error:
+            type: object
+            required: [error]
+            properties:
+                error: { type: string }
+                details: {}
+    responses:
+        BadRequest:
+            description: Validation failed
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Unauthorized:
+            description: Missing/invalid service token or user headers
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Forbidden:
+            description: Insufficient role
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        NotFound:
+            description: Resource not found
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }

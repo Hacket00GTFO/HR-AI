@@ -1,0 +1,237 @@
+openapi: 3.1.0
+info:
+    title: StraforAI Notifications API
+    version: 1.0.0
+    description: >
+        Notification microservice (email now, SMS-ready later). Other services
+        request sends via `POST /v1/notifications/send` authenticated with the
+        shared `X-Service-Token` header; end users reach it through the gateway
+        (`X-User-Id` / `X-User-Role` headers). Sends are idempotent via the
+        `Idempotency-Key` header. Domain events consumed from RabbitMQ
+        (`domain.events`) are also mapped to templates.
+        Errors use the shared envelope `{ "error": string, "details"?: any }`.
+servers:
+    - url: http://localhost:3007
+      description: Local development
+tags:
+    - name: notifications
+    - name: preferences
+    - name: meta
+paths:
+    /v1/notifications/send:
+        post:
+            tags: [notifications]
+            summary: Queue a templated notification
+            description: >
+                Accepts either service auth (`X-Service-Token`) or gateway user
+                headers. Replay-safe: the same `Idempotency-Key` returns the
+                original log row (`replayed: true`). The send itself is
+                performed asynchronously by the worker loop.
+            parameters:
+                - name: Idempotency-Key
+                  in: header
+                  required: true
+                  schema: { type: string, minLength: 8, maxLength: 200 }
+                - name: X-Service-Token
+                  in: header
+                  required: false
+                  schema: { type: string }
+                - name: X-User-Id
+                  in: header
+                  required: false
+                  schema: { type: integer }
+                - name: X-User-Role
+                  in: header
+                  required: false
+                  schema: { type: string }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [to, template]
+                            properties:
+                                to: { type: string, format: email }
+                                template:
+                                    type: string
+                                    example: application.received
+                                payload:
+                                    type: object
+                                    additionalProperties: true
+                                    description: Template interpolation variables ({{name}} style)
+                                locale:
+                                    type: string
+                                    enum: [en, es]
+                                    default: en
+                                userId:
+                                    type: integer
+                                    nullable: true
+                                    description: Recipient user id — used for preference suppression checks
+            responses:
+                '202':
+                    description: Accepted (or replayed)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                required: [id, status]
+                                properties:
+                                    id: { type: string, format: uuid }
+                                    status: { type: string, enum: [queued, suppressed] }
+                                    replayed: { type: boolean, default: false }
+                '400': { $ref: '#/components/responses/BadRequest' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /v1/notifications:
+        get:
+            tags: [notifications]
+            summary: List notification logs (admin)
+            parameters:
+                - name: X-User-Id
+                  in: header
+                  required: true
+                  schema: { type: integer }
+                - name: X-User-Role
+                  in: header
+                  required: true
+                  schema: { type: string, enum: [admin, hr, candidate] }
+                - name: status
+                  in: query
+                  schema: { type: string, enum: [queued, sent, failed, suppressed] }
+                - name: page
+                  in: query
+                  schema: { type: integer, minimum: 1, default: 1 }
+                - name: pageSize
+                  in: query
+                  schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+            responses:
+                '200':
+                    description: Paginated log rows
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/NotificationLog' }
+                                    page: { type: integer }
+                                    pageSize: { type: integer }
+                                    total: { type: integer }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+    /v1/notifications/preferences:
+        get:
+            tags: [preferences]
+            summary: Current user's notification preferences
+            parameters:
+                - name: X-User-Id
+                  in: header
+                  required: true
+                  schema: { type: integer }
+                - name: X-User-Role
+                  in: header
+                  required: true
+                  schema: { type: string }
+            responses:
+                '200':
+                    description: Preferences (defaults to enabled when no row exists)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Preferences'
+                '401': { $ref: '#/components/responses/Unauthorized' }
+        put:
+            tags: [preferences]
+            summary: Update current user's preferences
+            parameters:
+                - name: X-User-Id
+                  in: header
+                  required: true
+                  schema: { type: integer }
+                - name: X-User-Role
+                  in: header
+                  required: true
+                  schema: { type: string }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                email: { type: boolean }
+            responses:
+                '200':
+                    description: Updated preferences
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Preferences'
+                '400': { $ref: '#/components/responses/BadRequest' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /health:
+        get:
+            tags: [meta]
+            summary: Liveness probe
+            responses:
+                '200': { description: Process is alive }
+    /ready:
+        get:
+            tags: [meta]
+            summary: Readiness probe (db + smtp verify)
+            responses:
+                '200': { description: Ready }
+                '503': { description: Dependency unavailable }
+components:
+    schemas:
+        NotificationLog:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                toEmail: { type: string, format: email }
+                templateKey: { type: string }
+                payload: { type: object, additionalProperties: true }
+                status: { type: string, enum: [queued, sent, failed, suppressed] }
+                error: { type: string, nullable: true }
+                attempts: { type: integer }
+                sentAt: { type: string, format: date-time, nullable: true }
+                correlationId: { type: string, nullable: true }
+                createdAt: { type: string, format: date-time }
+        Preferences:
+            type: object
+            properties:
+                userId: { type: integer }
+                channels:
+                    type: object
+                    properties:
+                        email: { type: boolean }
+                updatedAt: { type: string, format: date-time, nullable: true }
+        Error:
+            type: object
+            required: [error]
+            properties:
+                error: { type: string }
+                details: {}
+    responses:
+        BadRequest:
+            description: Validation failed
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Unauthorized:
+            description: Missing/invalid service token or user headers
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Forbidden:
+            description: Insufficient role
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        NotFound:
+            description: Template or resource not found
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
