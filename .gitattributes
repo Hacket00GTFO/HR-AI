@@ -1,0 +1,9 @@
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+
+# Observability configs must be LF (mounted into Linux containers; CRLF
+# breaks YAML parsers in prometheus/loki/tempo/alertmanager).
+infra/observability/** text eol=lf
+infra/compose/observability/** text eol=lf
+infra/k8s/observability/** text eol=lf

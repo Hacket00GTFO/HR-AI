@@ -1,0 +1,29 @@
+**/node_modules
+**/.turbo
+**/coverage
+.git
+.claude
+.github
+.husky
+.env
+.env.local
+*.log
+*.zip
+*.xlsx
+*.pdf
+*.csv
+*.docx
+*.doc
+*.mp4
+*.tsbuildinfo
+
+# Runtime data — never part of the image
+secure_uploads
+uploads
+
+# Non-shipping parts of the monorepo
+# NOTE: packages/ is intentionally NOT ignored — pnpm deploy needs the
+# workspace package manifests to resolve workspace:* devDependencies.
+infra
+**/tests
+__pycache__

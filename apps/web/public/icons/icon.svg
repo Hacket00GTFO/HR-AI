@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="StraforAI">
+  <rect width="512" height="512" rx="96" fill="#d14438"/>
+  <path d="M256 112 400 256 256 400 112 256Z" fill="#ffffff"/>
+  <circle cx="256" cy="256" r="52" fill="#d14438"/>
+</svg>

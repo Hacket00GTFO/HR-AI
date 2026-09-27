@@ -1,0 +1,55 @@
+# Large files
+Template\ presentación\ -\ Tech\ Mahindra.pptx
+
+# General
+.DS_Store
+.env
+.env.local
+node_modules/
+dist/
+build/
+
+# Logs and binaries
+*.log
+*.zip
+*.xlsx
+*.pdf
+*.csv
+*.docx
+*.doc
+*.mp4
+
+# Seed datasets are intentionally committable under infra/seed-data/
+!infra/seed-data/
+!infra/seed-data/**
+
+# Monorepo tooling
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# Uploaded candidate data (PII — never commit)
+frontend/resumes/
+secure_uploads/
+uploads/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Agent/tooling config
+.claude/
+
+# Legacy backend (removed)
+backend/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Subagent worktrees
+.worktrees/
+infra/observability/alertmanager/webhook.token

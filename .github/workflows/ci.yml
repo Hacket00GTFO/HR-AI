@@ -1,0 +1,287 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    NODE_VERSION: '24'
+
+jobs:
+    install:
+        name: Install & warm cache
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0 # needed for turbo --filter=[HEAD^]
+            - uses: pnpm/action-setup@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - uses: actions/cache@v4
+              with:
+                  path: node_modules/.cache/turbo
+                  key: turbo-${{ runner.os }}-${{ github.sha }}
+                  restore-keys: turbo-${{ runner.os }}-
+
+    lint:
+        name: Lint (changed packages)
+        needs: install
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+            - uses: pnpm/action-setup@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - name: Lint packages changed since HEAD^
+              run: pnpm turbo run lint --filter='[HEAD^]'
+
+    typecheck:
+        name: Typecheck (changed packages)
+        needs: install
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+            - uses: pnpm/action-setup@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm turbo run typecheck --filter='[HEAD^]'
+
+    test:
+        name: Test (changed packages)
+        needs: install
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+            - uses: pnpm/action-setup@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm turbo run test --filter='[HEAD^]'
+
+    ai-matching:
+        name: AI matching tests (pytest)
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+                  cache: pip
+                  cache-dependency-path: apps/ai-matching/requirements*.txt
+            - run: pip install -r apps/ai-matching/requirements-dev.txt -r apps/ai-matching/requirements.txt
+            - run: python -m pytest tests -q
+              working-directory: apps/ai-matching
+
+    integration:
+        name: Integration (real Postgres/RabbitMQ/Mailpit)
+        runs-on: ubuntu-latest
+        services:
+            postgres:
+                image: postgres:16-alpine
+                env:
+                    POSTGRES_USER: strafor
+                    POSTGRES_PASSWORD: strafor_ci
+                    POSTGRES_DB: innovation
+                ports: ['5432:5432']
+                options: >-
+                    --health-cmd "pg_isready -U strafor"
+                    --health-interval 5s --health-timeout 5s --health-retries 10
+            rabbitmq:
+                image: rabbitmq:3.13-management
+                env:
+                    RABBITMQ_DEFAULT_USER: strafor
+                    RABBITMQ_DEFAULT_PASS: strafor_ci
+                ports: ['5672:5672']
+                options: >-
+                    --health-cmd "rabbitmq-diagnostics -q ping"
+                    --health-interval 5s --health-timeout 5s --health-retries 10
+            mailpit:
+                image: axllent/mailpit:latest
+                ports: ['1025:1025', '8025:8025']
+        env:
+            DATABASE_URL: postgres://strafor:strafor_ci@localhost:5432/innovation
+            TEST_DATABASE_URL: postgres://strafor:strafor_ci@localhost:5432/strafor_notifications
+            TEST_SMTP_HOST: localhost
+            TEST_SMTP_PORT: '1025'
+            TEST_MAILPIT_API: http://localhost:8025
+            TEST_RABBITMQ_URL: amqp://strafor:strafor_ci@localhost:5672
+        steps:
+            - uses: actions/checkout@v4
+            - uses: pnpm/action-setup@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - name: Create notifications test database
+              run: |
+                  PGPASSWORD=strafor_ci psql -h localhost -U strafor -d innovation \
+                    -c 'CREATE DATABASE strafor_notifications;' || true
+            - name: Run API migrations against real Postgres
+              run: pnpm --filter @strafor/api migrate
+            - name: Run notifications service migrations
+              run: pnpm --filter @strafor/notifications migrate
+              env:
+                  DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+            - name: API tests
+              run: pnpm --filter @strafor/api test
+            - name: Notifications integration tests
+              run: pnpm --filter @strafor/notifications test
+
+    e2e:
+        # Full-stack role-matrix suite — builds every image and runs
+        # tests/e2e against the live compose topology. Too heavy for PRs;
+        # runs on main pushes and manual dispatch.
+        name: E2E role matrix (full compose stack)
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        steps:
+            - uses: actions/checkout@v4
+            - uses: pnpm/action-setup@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - name: Write CI .env
+              run: |
+                  cp .env.example .env
+                  python3 - <<'PY'
+                  import re
+                  env = open('.env').read()
+                  subs = {
+                      'POSTGRES_PASSWORD': 'ci_pg_pass',
+                      'JWT_SECRET': 'ci_legacy_jwt_secret',
+                      'RABBITMQ_PASSWORD': 'ci_rmq_pass',
+                      'MINIO_ROOT_PASSWORD': 'ci_minio_pass123',
+                      'SERVICE_AUTH_TOKEN': 'ci_service_token',
+                      'SETTINGS_ENCRYPTION_KEY': 'Y2lfc2V0dGluZ3NfZW5jcnlwdGlvbl9rZXlfMzJf',
+                      'AUTH_MODE': 'v1',
+                      'JWT_GENERATE_KEYS': 'true',
+                  }
+                  for k, v in subs.items():
+                      env = re.sub(rf'^{k}=.*$', f'{k}={v}', env, flags=re.M)
+                  env = env.replace('strafor:CHANGE_ME@db:5432', 'strafor:ci_pg_pass@db:5432')
+                  env = env.replace('strafor:CHANGE_ME@rabbitmq:5672', 'strafor:ci_rmq_pass@rabbitmq:5672')
+                  open('.env', 'w').write(env)
+                  PY
+                  grep -c CHANGE_ME .env && echo 'WARN: CHANGE_ME left in .env' || true
+            - name: Build and start the stack
+              # Skip the observability services (11 prebuilt pulls) — the
+              # suite only exercises the application topology.
+              run: >
+                  docker compose up -d --build
+                  db redis rabbitmq mailpit minio
+                  identity-auth api gateway web
+                  documents-resumes notifications
+                  recruitment-core hr-core time-attendance
+                  payroll-adapter hr-services
+                  directory-sync calendar-bridge
+                  ai-matching analytics
+              env:
+                  COMPOSE_DOCKER_CLI_BUILD: '1'
+            - name: Wait for services to be healthy
+              timeout-minutes: 10
+              run: |
+                  for i in $(seq 1 60); do
+                    bad=$(docker compose ps --format json | python3 -c "
+                  import sys, json
+                  bad = [c['Service'] for c in (json.loads(l) for l in sys.stdin if l.strip())
+                         if c['State'] != 'running' or c['Health'] == 'unhealthy']
+                  print(' '.join(bad))
+                  ")
+                    if [ -z "$bad" ]; then echo 'all healthy'; exit 0; fi
+                    echo "waiting on: $bad"
+                    sleep 10
+                  done
+                  docker compose ps
+                  exit 1
+            - name: Seed E2E users
+              run: pnpm --filter @strafor/e2e-tests seed
+            - name: Run the role-matrix suite
+              run: pnpm --filter @strafor/e2e-tests test
+            - name: Generate role matrix doc
+              if: always()
+              run: pnpm --filter @strafor/e2e-tests matrix:doc || true
+            - uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: role-matrix
+                  path: docs/security/role-matrix.md
+                  if-no-files-found: ignore
+            - name: Dump compose logs on failure
+              if: failure()
+              run: docker compose logs --tail=200
+
+    audit:
+        name: Dependency audit
+        needs: install
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: pnpm/action-setup@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm audit --prod
+
+    docker-build:
+        name: Build API image
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: docker/setup-buildx-action@v3
+            - name: Build image (context = repo root)
+              run: docker build -f apps/api/Dockerfile -t strafor/api:${{ github.sha }} .
+            - name: Export image for downstream jobs
+              run: |
+                  mkdir -p /tmp/image
+                  docker save strafor/api:${{ github.sha }} -o /tmp/image/api.tar
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: api-image
+                  path: /tmp/image/api.tar
+                  retention-days: 1
+
+    trivy:
+        name: Trivy image scan (CRITICAL,HIGH fails)
+        needs: docker-build
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  name: api-image
+                  path: /tmp/image
+            - run: docker load -i /tmp/image/api.tar
+            - uses: aquasecurity/trivy-action@0.28.0
+              with:
+                  image-ref: strafor/api:${{ github.sha }}
+                  severity: CRITICAL,HIGH
+                  exit-code: '1'
+                  ignore-unfixed: true
