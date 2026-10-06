@@ -1,0 +1,393 @@
+# NetworkPolicies — default-deny, then explicit allows.
+#
+# Model: the ingress-nginx controller reaches only gateway + web; web BFF
+# and gateway reach the app services; app services reach their datastores.
+# Prometheus (strafor-observability ns) may scrape every pod. Egress is
+# restricted to DNS, intra-namespace traffic, and outbound HTTPS (+ SMTP
+# for notifications).
+#
+# The ingress-nginx selector assumes the standard Helm/manifests install:
+# namespace `ingress-nginx`, pods labeled app.kubernetes.io/name=ingress-nginx.
+# Adjust namespaceSelector/podSelector if the controller is installed
+# elsewhere (e.g. `app-routing` on AKS uses its own namespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: default-deny-all
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector: {}
+    policyTypes: [Ingress, Egress]
+---
+# DNS resolution (CoreDNS lives in kube-system on AKS).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-egress-dns
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector: {}
+    policyTypes: [Egress]
+    egress:
+        - to:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+          ports:
+              - { protocol: UDP, port: 53 }
+              - { protocol: TCP, port: 53 }
+---
+# Intra-namespace egress — ingress rules still gate who may connect in;
+# this keeps egress simple while pod-to-pod stays inside `strafor`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-egress-intra-namespace
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector: {}
+    policyTypes: [Egress]
+    egress:
+        - to:
+              - podSelector: {}
+---
+# Outbound HTTPS for app workloads — Key Vault (CSI driver), LLM APIs,
+# OIDC/JWKS endpoints, external webhooks, etc.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-egress-https
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+                  - gateway
+                  - web
+                  - api
+                  - identity-auth
+                  - notifications
+                  - documents-resumes
+                  - ai-matching
+                  - ai-matching-worker
+                  - analytics
+    policyTypes: [Egress]
+    egress:
+        - to:
+              - ipBlock: { cidr: 0.0.0.0/0 }
+          ports:
+              - { protocol: TCP, port: 443 }
+---
+# notifications is the only service that sends email — allow SMTP egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-egress-smtp
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: notifications }
+    policyTypes: [Egress]
+    egress:
+        - to:
+              - ipBlock: { cidr: 0.0.0.0/0 }
+          ports:
+              - { protocol: TCP, port: 587 } # submission (STARTTLS)
+              - { protocol: TCP, port: 465 } # smtps
+              - { protocol: TCP, port: 25 } # plain relay, if the provider requires it
+---
+# Prometheus / blackbox in strafor-observability scrape every pod's
+# metrics port — ports vary per service, so the allow is port-agnostic but
+# namespace-scoped (the monitoring namespace is trusted).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-observability
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector: {}
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: strafor-observability
+---
+# ---- Public entrypoints ----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-gateway
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: gateway }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: ingress-nginx
+                podSelector:
+                    matchLabels:
+                        app.kubernetes.io/name: ingress-nginx
+              # web BFF calls the gateway directly for /api requests.
+              - podSelector:
+                    matchLabels: { app.kubernetes.io/name: web }
+          ports:
+              - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-web
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: web }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: ingress-nginx
+                podSelector:
+                    matchLabels:
+                        app.kubernetes.io/name: ingress-nginx
+              # gateway may proxy to web as STATIC_FALLBACK_URL.
+              - podSelector:
+                    matchLabels: { app.kubernetes.io/name: gateway }
+          ports:
+              - { protocol: TCP, port: 3010 }
+---
+# ---- App services (reachable only from the gateway / BFF / peers that
+# call them directly) ----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-api
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: api }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values: [gateway, web]
+          ports:
+              - { protocol: TCP, port: 3000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-identity-auth
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: identity-auth }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              # gateway (JWT/JWKS), api and web BFF (JWKS + auth calls).
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values: [gateway, api, web]
+          ports:
+              - { protocol: TCP, port: 3001 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-documents-resumes
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: documents-resumes }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              # ai-matching calls documents-resumes for text extraction.
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values: [gateway, api, ai-matching]
+          ports:
+              - { protocol: TCP, port: 3004 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-ai-matching
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: ai-matching }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values: [gateway, api]
+          ports:
+              - { protocol: TCP, port: 3005 }
+---
+# ai-matching-worker is a Celery consumer — no inbound needed; default
+# deny covers it (listed implicitly, no policy = ingress denied).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-notifications
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: notifications }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values: [gateway, api]
+          ports:
+              - { protocol: TCP, port: 3007 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-analytics
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: analytics }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values: [gateway, api]
+          ports:
+              - { protocol: TCP, port: 3008 }
+---
+# ---- Datastores ----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-postgres
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: db }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values:
+                              - api
+                              - identity-auth
+                              - documents-resumes
+                              - notifications
+                              - ai-matching
+                              - ai-matching-worker
+                              - analytics
+          ports:
+              - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-redis
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: redis }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              # rate limit / jti blacklist (gateway, identity-auth),
+              # cache (api), celery result backend (ai-matching).
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values:
+                              - gateway
+                              - api
+                              - identity-auth
+                              - ai-matching
+                              - ai-matching-worker
+          ports:
+              - { protocol: TCP, port: 6379 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-rabbitmq
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: rabbitmq }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values:
+                              - api
+                              - identity-auth
+                              - documents-resumes
+                              - notifications
+                              - ai-matching
+                              - ai-matching-worker
+                              - analytics
+          ports:
+              - { protocol: TCP, port: 5672 }
+        # Management UI / prometheus plugin ports reachable only from the
+        # observability namespace (covered by allow-ingress-observability
+        # anyway — this is belt & braces for 15672/15692).
+        - from:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: strafor-observability
+          ports:
+              - { protocol: TCP, port: 15672 }
+              - { protocol: TCP, port: 15692 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: allow-ingress-minio
+    labels: { app.kubernetes.io/part-of: strafor }
+spec:
+    podSelector:
+        matchLabels: { app.kubernetes.io/name: minio }
+    policyTypes: [Ingress]
+    ingress:
+        - from:
+              - podSelector:
+                    matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values: [api, documents-resumes]
+          ports:
+              - { protocol: TCP, port: 9000 }
+        # Console (9001) intentionally has no pod allow — reach it via
+        # kubectl port-forward (port-forward bypasses NetworkPolicy).

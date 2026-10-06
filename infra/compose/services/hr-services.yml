@@ -1,0 +1,49 @@
+# hr-services — HR service desk (mesa de servicio), company assets,
+# viaticos and NOM-035 / climate surveys (port 3014, db strafor_services).
+# Merged into the root docker-compose.yml via the top-level `include:` list.
+#
+# Gateway routing (wired separately): /api/v1/{tickets,assets,expenses,surveys}* → hr-services:3014.
+# HR role only for management; platform admins are always 403. Employee
+# self-service routes resolve the caller's employee via employee_directory.
+services:
+    hr-services:
+        build:
+            context: ../../.. # repo root
+            dockerfile: apps/hr-services/Dockerfile
+        environment:
+            NODE_ENV: production
+            PORT: 3014
+            DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/strafor_services
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN}
+            # HMAC key for survey respondent pseudonymisation (optional —
+            # falls back to SERVICE_AUTH_TOKEN when unset).
+            SURVEY_RESPONDENT_SALT: ${SURVEY_RESPONDENT_SALT:-}
+            RABBITMQ_URL: ${RABBITMQ_URL}
+            RABBITMQ_EXCHANGE: domain.events
+            # Observability
+            SERVICE_NAME: hr-services
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            db:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD-SHELL', 'wget -qO- http://localhost:3014/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 6
+        labels:
+            prometheus.scrape: 'true'
+            prometheus.port: '3014'
+            prometheus.path: '/metrics'
+        ports:
+            - '3014:3014'
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 256M

@@ -1,0 +1,11 @@
+services:
+    redis-exporter:
+        image: oliver006/redis_exporter:v1.89.0
+        container_name: redis-exporter
+        restart: unless-stopped
+        environment:
+            REDIS_ADDR: redis://redis:6379
+        deploy:
+            resources:
+                limits:
+                    memory: 64M

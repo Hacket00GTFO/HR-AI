@@ -1,0 +1,57 @@
+# directory-sync — worker that keeps cross-service projections populated
+# (recruitment-core + hr-core users_projection, hr-services employee_directory).
+# Merged into the root docker-compose.yml via the top-level `include:` list.
+#
+# Internal-only: NO published host port. Stateless: no owned database — it
+# reads strafor_identity.users directly and pushes upserts over HTTP.
+services:
+    directory-sync:
+        build:
+            context: ../../.. # repo root
+            dockerfile: apps/directory-sync/Dockerfile
+        environment:
+            NODE_ENV: production
+            PORT: 3017
+            # Internal service-to-service auth (X-Service-Token).
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN}
+            # Direct read of strafor_identity.users (source of truth).
+            IDENTITY_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/strafor_identity
+            # Sync targets.
+            RECRUITMENT_CORE_URL: http://recruitment-core:3009
+            HR_CORE_URL: http://hr-core:3010
+            HR_SERVICES_URL: http://hr-services:3014
+            SYNC_INTERVAL_MS: ${SYNC_INTERVAL_MS:-60000}
+            # Observability
+            SERVICE_NAME: directory-sync
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            db:
+                condition: service_healthy
+            # service_started on purpose: the worker must come up even when a
+            # target is down — per-step retry/backoff is its job.
+            identity-auth:
+                condition: service_started
+            recruitment-core:
+                condition: service_started
+            hr-core:
+                condition: service_started
+            hr-services:
+                condition: service_started
+        healthcheck:
+            test: ['CMD-SHELL', 'wget -qO- http://localhost:3017/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 6
+        labels:
+            prometheus.scrape: 'true'
+            prometheus.port: '3017'
+            prometheus.path: '/metrics'
+        # No ports: — internal-only worker, scraped via the compose network.
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 256M

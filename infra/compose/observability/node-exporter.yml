@@ -1,0 +1,24 @@
+services:
+    node-exporter:
+        image: prom/node-exporter:v1.12.1
+        container_name: node-exporter
+        restart: unless-stopped
+        pid: host
+        volumes:
+            - /:/host:ro
+        command:
+            - --path.rootfs=/host
+            - --collector.cpu
+            - --collector.diskstats
+            - --collector.filesystem
+            - --collector.loadavg
+            - --collector.meminfo
+            - --collector.netdev
+            - --collector.stat
+            - --collector.time
+            - --collector.uname
+            - --collector.vmstat
+        deploy:
+            resources:
+                limits:
+                    memory: 128M

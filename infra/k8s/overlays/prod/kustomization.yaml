@@ -1,0 +1,80 @@
+# Production overlay — Azure AKS.
+# Hardens the dev-grade base with: immutable image tags, PVCs for stateful
+# components, HPA/PDB, NetworkPolicies, pod securityContexts, cert-manager
+# TLS ingress, and Azure Key Vault secret injection via the Secrets Store
+# CSI driver (see README.md for cluster prerequisites + secret inventory).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: strafor
+
+resources:
+    - ../../base
+    - pvcs.yaml
+    - secretproviderclass.yaml
+    - hpa.yaml
+    - pdb.yaml
+    - networkpolicies.yaml
+
+# ---- Immutable image tags ----
+# Application images are published to GHCR by CI. The tags below are
+# PLACEHOLDERS — the pipeline overrides them at deploy time, e.g.
+#   kustomize edit set image ghcr.io/strafor/api=ghcr.io/strafor/api:v1.2.3
+# or by applying a generated images: section. Never ship :latest.
+images:
+    - name: strafor/api
+      newName: ghcr.io/strafor/api
+      newTag: v0.0.0-ci # placeholder — CI injects the real tag
+    - name: strafor/gateway
+      newName: ghcr.io/strafor/gateway
+      newTag: v0.0.0-ci
+    - name: strafor/identity-auth
+      newName: ghcr.io/strafor/identity-auth
+      newTag: v0.0.0-ci
+    - name: strafor/documents-resumes
+      newName: ghcr.io/strafor/documents-resumes
+      newTag: v0.0.0-ci
+    - name: strafor/notifications
+      newName: ghcr.io/strafor/notifications
+      newTag: v0.0.0-ci
+    - name: strafor/ai-matching
+      newName: ghcr.io/strafor/ai-matching
+      newTag: v0.0.0-ci
+    - name: strafor/analytics
+      newName: ghcr.io/strafor/analytics
+      newTag: v0.0.0-ci
+    - name: strafor/web
+      newName: ghcr.io/strafor/web
+      newTag: v0.0.0-ci
+    # Third-party images — pin exact versions (or digests) instead of
+    # floating tags. Update deliberately.
+    - name: redis
+      newTag: 7.4.2-alpine
+    - name: rabbitmq
+      newTag: 3.13.7-management-alpine
+    - name: minio/minio
+      newTag: RELEASE.2025-04-22T22-12-26Z
+    - name: pgvector/pgvector
+      newTag: pg16 # major-version pin; consider a digest pin
+
+patches:
+    # Drop the dev SMTP sink — prod uses an external SMTP endpoint.
+    - path: patches/mailpit-delete.yaml
+    # Gateway is fronted exclusively by the ingress in prod.
+    - path: patches/gateway-clusterip.yaml
+    # Prod config overrides (public URL, CORS, external SMTP host).
+    - path: patches/configmap-prod.yaml
+    # TLS + security headers + prod host.
+    - path: patches/ingress-annotations.yaml
+    - path: patches/ingress-tls.yaml
+      target: { kind: Ingress, name: strafor }
+    # Stateful storage: emptyDir -> PVC, storageClassName on all claims.
+    - path: patches/storage-redis.yaml
+      target: { kind: Deployment, name: strafor-redis }
+    - path: patches/storage-rabbitmq.yaml
+      target: { kind: Deployment, name: strafor-rabbitmq }
+    - path: patches/storage-classes.yaml
+    # Pod hardening: securityContext, read-only rootfs, /tmp emptyDir,
+    # Secrets Store CSI volumes, workload identity, CPU limits.
+    - path: patches/hardening-apps.yaml
+    - path: patches/hardening-data.yaml

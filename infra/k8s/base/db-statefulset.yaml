@@ -1,0 +1,79 @@
+# PostgreSQL (pgvector image — the `vector` extension is not in stock images).
+# Single replica StatefulSet with a PVC. One physical DB server hosting one
+# logical database per service (strafor_identity, strafor_documents,
+# strafor_notifications, strafor_ai, strafor_analytics, strafor_recruitment)
+# plus the legacy `innovation` DB — provisioned by an init Job or manually:
+#   kubectl exec -n strafor strafor-db-0 -- psql -U strafor -c 'CREATE DATABASE ...'
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+    name: strafor-db
+    namespace: strafor
+    labels:
+        app.kubernetes.io/name: db
+        app.kubernetes.io/part-of: strafor
+spec:
+    serviceName: strafor-db
+    replicas: 1
+    selector:
+        matchLabels:
+            app.kubernetes.io/name: db
+    template:
+        metadata:
+            labels:
+                app.kubernetes.io/name: db
+                app.kubernetes.io/part-of: strafor
+        spec:
+            containers:
+                - name: postgres
+                  image: pgvector/pgvector:pg16
+                  ports:
+                      - { name: postgres, containerPort: 5432 }
+                  env:
+                      - name: POSTGRES_DB
+                        valueFrom:
+                            configMapKeyRef: { name: strafor-config, key: POSTGRES_DB }
+                      - name: POSTGRES_USER
+                        valueFrom:
+                            configMapKeyRef: { name: strafor-config, key: POSTGRES_USER }
+                      - name: POSTGRES_PASSWORD
+                        valueFrom:
+                            secretKeyRef: { name: strafor-secrets, key: POSTGRES_PASSWORD }
+                  readinessProbe:
+                      exec:
+                          command: ['pg_isready', '-U', '$(POSTGRES_USER)', '-d', '$(POSTGRES_DB)']
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                  livenessProbe:
+                      exec:
+                          command: ['pg_isready', '-U', '$(POSTGRES_USER)', '-d', '$(POSTGRES_DB)']
+                      initialDelaySeconds: 30
+                      periodSeconds: 20
+                  resources:
+                      requests: { cpu: 100m, memory: 256Mi }
+                      limits: { memory: 1Gi }
+                  volumeMounts:
+                      - { name: pgdata, mountPath: /var/lib/postgresql/data, subPath: pgdata }
+    volumeClaimTemplates:
+        - metadata:
+              name: pgdata
+          spec:
+              accessModes: ['ReadWriteOnce']
+              resources:
+                  requests:
+                      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: strafor-db
+    namespace: strafor
+    labels:
+        app.kubernetes.io/name: db
+        app.kubernetes.io/part-of: strafor
+spec:
+    clusterIP: None # headless — stable DNS for the StatefulSet pod
+    selector:
+        app.kubernetes.io/name: db
+    ports:
+        - { name: postgres, port: 5432, targetPort: postgres }

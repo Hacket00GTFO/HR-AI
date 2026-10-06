@@ -1,0 +1,112 @@
+# identity-auth service fragment — merged into the root docker-compose.yml
+# during integration (see infra/compose/services/README.md).
+services:
+    identity-auth:
+        build:
+            context: ../../.. # repo root
+            dockerfile: apps/identity-auth/Dockerfile
+        environment:
+            PORT: '3001'
+            NODE_ENV: production
+            DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/strafor_identity
+            # RS256 keypair — inline PEMs (\n-escaped) or generate once with
+            # `pnpm --filter @strafor/identity-auth genkeys` and mount keys/.
+            JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+            JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+            # Dev-only: auto-generate an ephemeral RS256 keypair inside the
+            # container when no PEM material is provided. Leave false in prod.
+            JWT_GENERATE_KEYS: ${JWT_GENERATE_KEYS:-false}
+            JWT_ISSUER: ${JWT_ISSUER:-strafor-identity}
+            ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
+            REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-7}
+            # AES-256-GCM key (base64, 32 bytes) for settings secrets at rest.
+            SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-}
+            REDIS_URL: redis://redis:6379
+            RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+            NOTIFICATIONS_URL: ${NOTIFICATIONS_URL:-http://notifications:3007}
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN}
+            PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+            # MFA login-challenge token lifetime (between password check and
+            # TOTP verification at POST /v1/auth/mfa/verify).
+            MFA_CHALLENGE_TTL: ${MFA_CHALLENGE_TTL:-5m}
+            # Optional OIDC/SSO (dev only) — pairs with the `keycloak` service
+            # below (docker compose --profile sso). All-or-nothing: setting
+            # OIDC_ISSUER + OIDC_CLIENT_ID enables it; anything partial fails
+            # config validation at boot. See apps/identity-auth/src/routes/oidc.ts.
+            OIDC_ISSUER: ${OIDC_ISSUER:-}
+            OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+            OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+            OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+            # Observability
+            SERVICE_NAME: identity-auth
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            db:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD-SHELL', 'wget -qO- http://localhost:3001/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 6
+        labels:
+            prometheus.scrape: 'true'
+            prometheus.port: '3001'
+            prometheus.path: '/metrics'
+        ports:
+            - '3015:3001'
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 256M
+
+    # Dev-only OIDC provider for SSO plumbing (authorization-code flow design
+    # in apps/identity-auth/src/routes/oidc.ts). NOT part of the default stack:
+    # start it explicitly with `docker compose --profile sso up keycloak`.
+    # Realm bootstrap: ../keycloak/strafor-realm.json (imported via --import-realm).
+    # With the realm's `strafor-web` client, set on identity-auth:
+    #   OIDC_ISSUER=http://localhost:8180/realms/strafor
+    #   OIDC_CLIENT_ID=strafor-web
+    #   OIDC_CLIENT_SECRET=dev-strafor-web-secret (see realm json — dev only)
+    # Embedded dev-file H2 storage (persisted in the keycloak-data volume) —
+    # no Postgres dependency, nothing here applies to production.
+    keycloak:
+        profiles: ['sso']
+        image: quay.io/keycloak/keycloak:26.3
+        command: ['start-dev', '--import-realm']
+        environment:
+            KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+            KC_HTTP_ENABLED: 'true'
+            KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-http://localhost:8180}
+            KC_HOSTNAME_STRICT: 'false'
+        volumes:
+            - ../keycloak:/opt/keycloak/data/import:ro
+            - keycloak-data:/opt/keycloak/data
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    'exec 3<>/dev/tcp/localhost/8080 && echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\n\r\n" >&3 && grep -q "200" <&3'
+                ]
+            interval: 15s
+            timeout: 5s
+            retries: 20
+            start_period: 30s
+        ports:
+            - '8180:8080'
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 768M
+
+volumes:
+    keycloak-data:

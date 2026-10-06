@@ -1,0 +1,52 @@
+# notifications — templated email service (port 3007).
+# Merge into root docker-compose.yml during integration — see README.md.
+services:
+    notifications:
+        build:
+            context: ../../.. # repo root
+            dockerfile: apps/notifications/Dockerfile
+        environment:
+            NODE_ENV: production
+            PORT: 3007
+            DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/strafor_notifications
+            SMTP_HOST: ${SMTP_HOST:-mailpit}
+            SMTP_PORT: ${SMTP_PORT:-1025}
+            SMTP_SECURE: ${SMTP_SECURE:-false}
+            SMTP_USER: ${SMTP_USER:-}
+            SMTP_PASS: ${SMTP_PASS:-}
+            SMTP_FROM: ${SMTP_FROM:-StraforAI <no-reply@strafor.local>}
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN}
+            RABBITMQ_URL: ${RABBITMQ_URL}
+            RABBITMQ_EXCHANGE: domain.events
+            # Mailbox for digest-style events (vacancy/payroll/survey,
+            # attendance anomalies, expense approvals). Empty → those skip.
+            HR_NOTIFY_EMAIL: ${HR_NOTIFY_EMAIL:-}
+            # Observability
+            SERVICE_NAME: notifications
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            db:
+                condition: service_healthy
+            mailpit:
+                condition: service_started
+            rabbitmq:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD-SHELL', 'wget -qO- http://localhost:3007/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 6
+        labels:
+            prometheus.scrape: 'true'
+            prometheus.port: '3007'
+            prometheus.path: '/metrics'
+        ports:
+            - '3007:3007'
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 256M

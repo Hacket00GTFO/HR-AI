@@ -1,0 +1,36 @@
+{
+    "_comment": "Dev-only realm placeholder for the `keycloak` compose service (profile `sso`). Imported at boot via --import-realm. Minimal but functional: realm `strafor`, confidential client `strafor-web` wired to identity-auth's OIDC callback. NOT for production — rotate the client secret and never reuse these values.",
+    "realm": "strafor",
+    "enabled": true,
+    "displayName": "StraforAI (dev)",
+    "clients": [
+        {
+            "clientId": "strafor-web",
+            "name": "StraforAI web (dev SSO)",
+            "enabled": true,
+            "protocol": "openid-connect",
+            "publicClient": false,
+            "secret": "dev-strafor-web-secret",
+            "standardFlowEnabled": true,
+            "directAccessGrantsEnabled": false,
+            "serviceAccountsEnabled": false,
+            "redirectUris": [
+                "http://localhost:3001/v1/auth/oidc/callback",
+                "http://localhost:8080/api/v1/auth/oidc/callback",
+                "http://localhost:3010/*"
+            ],
+            "webOrigins": ["http://localhost:3010", "http://localhost:8080"],
+            "defaultClientScopes": ["openid", "profile", "email"]
+        }
+    ],
+    "users": [
+        {
+            "username": "dev.sso",
+            "enabled": true,
+            "email": "dev.sso@strafor.local",
+            "firstName": "Dev",
+            "lastName": "SSO",
+            "credentials": [{ "type": "password", "value": "devpassword", "temporary": false }]
+        }
+    ]
+}

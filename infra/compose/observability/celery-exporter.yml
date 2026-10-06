@@ -1,0 +1,12 @@
+services:
+    celery-exporter:
+        image: danihodovic/celery-exporter:0.12.2
+        container_name: celery-exporter
+        restart: unless-stopped
+        environment:
+            CE_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672//
+            CE_ADDR: '0.0.0.0:9808'
+        deploy:
+            resources:
+                limits:
+                    memory: 128M

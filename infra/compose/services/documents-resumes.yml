@@ -1,0 +1,56 @@
+# documents-resumes — S3 document storage + text extraction (port 3004).
+# Merge into root docker-compose.yml during integration — see README.md.
+services:
+    documents-resumes:
+        build:
+            context: ../../.. # repo root
+            dockerfile: apps/documents-resumes/Dockerfile
+        environment:
+            NODE_ENV: production
+            PORT: 3004
+            DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/strafor_documents
+            MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio}
+            MINIO_PORT: ${MINIO_PORT:-9000}
+            MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+            MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+            MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+            MINIO_BUCKET: ${MINIO_BUCKET:-strafor-documents}
+            MINIO_AUTOCREATE: 'true'
+            # Browsers reach MinIO via localhost:9000 — presigned URLs are
+            # generated against this public endpoint, not the in-cluster host.
+            MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
+            RABBITMQ_URL: ${RABBITMQ_URL}
+            RABBITMQ_EXCHANGE: domain.events
+            # Lets trusted internal callers (recruitment-core, monolith) assert
+            # candidate identity via X-Candidate-Id. Without it the service
+            # fails closed and never trusts that header.
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN}
+            # Observability
+            SERVICE_NAME: documents-resumes
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            db:
+                condition: service_healthy
+            minio:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD-SHELL', 'wget -qO- http://localhost:3004/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 6
+        labels:
+            prometheus.scrape: 'true'
+            prometheus.port: '3004'
+            prometheus.path: '/metrics'
+        ports:
+            - '3004:3004'
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 384M

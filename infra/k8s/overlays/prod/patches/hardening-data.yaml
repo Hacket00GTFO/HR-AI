@@ -1,0 +1,174 @@
+# Pod hardening for the stateful data services.
+#
+# These upstream images have NO `USER` directive (postgres, redis,
+# rabbitmq, minio all start as root and step down in their entrypoint), so
+# an explicit numeric runAsUser is required for runAsNonRoot to pass.
+# Verified uids: postgres debian = 999/999, redis:7-alpine = 999/1000,
+# rabbitmq:*-alpine = 100/101. minio runs as root upstream; we force
+# uid/gid 1000 (supported upstream).
+#
+# readOnlyRootFilesystem is enabled with emptyDir mounts for the paths
+# each daemon writes outside its data dir; drop it to false (noted inline)
+# if a version bump starts writing elsewhere.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+    namespace: strafor
+    name: strafor-db
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                # postgres image starts as root then gosu's to postgres;
+                # run straight as uid 999 (fsGroup makes pgdata writable).
+                runAsNonRoot: true
+                runAsUser: 999
+                runAsGroup: 999
+                fsGroup: 999
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: postgres
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: '1'
+                  volumeMounts:
+                      # unix socket + pid file live here
+                      - { name: run, mountPath: /var/run/postgresql }
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: run, emptyDir: {} }
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: strafor-redis
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                # redis:7-alpine entrypoint steps down to redis (uid 999,
+                # gid 1000) — run as it directly.
+                runAsNonRoot: true
+                runAsUser: 999
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: redis
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 250m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      # redis consumes no secrets — no secrets-store mount.
+            volumes:
+                - { name: tmp, emptyDir: {} }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: strafor-rabbitmq
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                # rabbitmq:*-alpine runs as rabbitmq uid 100 / gid 101.
+                runAsNonRoot: true
+                runAsUser: 100
+                runAsGroup: 101
+                fsGroup: 101
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: rabbitmq
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 500m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      # crash/console logs
+                      - { name: logs, mountPath: /var/log/rabbitmq }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - { name: logs, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: strafor-minio
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                # upstream minio has no USER (runs as root) — force 1000.
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: minio
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      # minio writes only under /data (PVC) and /tmp.
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 500m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault

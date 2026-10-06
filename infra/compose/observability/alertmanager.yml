@@ -1,0 +1,28 @@
+# Alertmanager — routes Prometheus alerts to email + webhook to the monolith.
+# Uses an entrypoint script that runs envsubst on the template (Alertmanager
+# does not expand ${VAR} in its config natively).
+services:
+    alertmanager:
+        image: prom/alertmanager:v0.34.0
+        container_name: alertmanager
+        restart: unless-stopped
+        ports:
+            - '9093:9093'
+        user: root
+        entrypoint: /etc/alertmanager/entrypoint.sh
+        environment:
+            ALERT_SMTP_HOST: ${ALERT_SMTP_HOST:-mailpit}
+            ALERT_SMTP_PORT: ${ALERT_SMTP_PORT:-1025}
+            ALERT_SMTP_FROM: ${ALERT_SMTP_FROM:-StraforAI Alerts <alerts@strafor.local>}
+            ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-admin@strafor.local}
+            ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN:-}
+        volumes:
+            - ../../observability/alertmanager/alertmanager.yml.tmpl:/etc/alertmanager/alertmanager.yml.tmpl:ro
+            - ../../observability/alertmanager/templates:/etc/alertmanager/templates:ro
+            - ../../observability/alertmanager/entrypoint.sh:/etc/alertmanager/entrypoint.sh:ro
+            - ../../observability/alertmanager/webhook.token:/etc/alertmanager/webhook.token:ro
+            - alertmanager-data:/alertmanager
+        deploy:
+            resources:
+                limits:
+                    memory: 128M

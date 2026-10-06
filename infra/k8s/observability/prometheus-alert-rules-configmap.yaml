@@ -1,0 +1,173 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: prometheus-alert-rules
+data:
+    recording.yml: |
+        # Recording rules are the same as compose — see infra/observability/prometheus/rules/recording.yml
+        # In K8s, container labels come from kubelet cAdvisor instead of Docker labels.
+        # The recording rules use container_label_com_docker_compose_project which won't exist in K8s,
+        # so we use a K8s-specific version that filters by namespace.
+        groups:
+            - name: strafor-recording
+              interval: 30s
+              rules:
+                  - record: strafor:container_cpu_percent:rate2m
+                    expr: |
+                        100 * sum by (pod, service) (
+                            rate(container_cpu_usage_seconds_total{namespace="strafor"}[2m])
+                        )
+                  - record: strafor:container_memory_working_set_bytes
+                    expr: |
+                        max by (pod, service) (
+                            container_memory_working_set_bytes{namespace="strafor"}
+                        )
+                  - record: strafor:container_memory_limit_bytes
+                    expr: |
+                        max by (pod, service) (
+                            container_spec_memory_limit_bytes{namespace="strafor"} > 0
+                        )
+                  - record: strafor:container_memory_percent
+                    expr: |
+                        100 * strafor:container_memory_working_set_bytes
+                        / strafor:container_memory_limit_bytes
+                        or vector(0)
+                  - record: strafor:container_network_rx_bytes:rate2m
+                    expr: |
+                        sum by (pod, service) (
+                            rate(container_network_receive_bytes_total{namespace="strafor"}[2m])
+                        )
+                  - record: strafor:container_network_tx_bytes:rate2m
+                    expr: |
+                        sum by (pod, service) (
+                            rate(container_network_transmit_bytes_total{namespace="strafor"}[2m])
+                        )
+                  - record: strafor:http_requests:rate5m
+                    expr: |
+                        sum by (service, route, method, status_class) (
+                            rate(http_requests_total[5m])
+                        )
+                  - record: strafor:http_error_ratio:rate5m
+                    expr: |
+                        sum by (service) (rate(http_requests_total{status_class="5xx"}[5m]))
+                        /
+                        sum by (service) (rate(http_requests_total[5m]))
+                  - record: strafor:http_latency_p50:5m
+                    expr: |
+                        histogram_quantile(0.50, sum by (service, le) (
+                            rate(http_request_duration_seconds_bucket[5m])
+                        ))
+                  - record: strafor:http_latency_p95:5m
+                    expr: |
+                        histogram_quantile(0.95, sum by (service, le) (
+                            rate(http_request_duration_seconds_bucket[5m])
+                        ))
+                  - record: strafor:http_latency_p99:5m
+                    expr: |
+                        histogram_quantile(0.99, sum by (service, le) (
+                            rate(http_request_duration_seconds_bucket[5m])
+                        ))
+    alerts.yml: |
+        # Alert rules — same as compose version.
+        # (Full content from infra/observability/prometheus/rules/alerts.yml)
+        groups:
+            - name: strafor-container-alerts
+              interval: 30s
+              rules:
+                  - alert: ContainerDown
+                    expr: strafor:probe_success == 0
+                    for: 2m
+                    labels:
+                        severity: critical
+                        category: container
+                    annotations:
+                        summary: "Container {{ $labels.service }} is down"
+                        description: "Container {{ $labels.service }} has been unreachable for 2 minutes."
+                  - alert: ContainerHighCPU
+                    expr: strafor:container_cpu_percent:rate2m > 85
+                    for: 10m
+                    labels:
+                        severity: warning
+                        category: container
+                    annotations:
+                        summary: "Container {{ $labels.pod }} high CPU"
+                        description: "Container {{ $labels.pod }} CPU usage is {{ $value }}% for 10 minutes."
+                  - alert: ContainerHighMemory
+                    expr: strafor:container_memory_percent > 85
+                    for: 10m
+                    labels:
+                        severity: warning
+                        category: container
+                    annotations:
+                        summary: "Container {{ $labels.pod }} high memory"
+                        description: "Container {{ $labels.pod }} memory usage is {{ $value }}% for 10 minutes."
+                  - alert: ContainerCriticalMemory
+                    expr: strafor:container_memory_percent > 95
+                    for: 2m
+                    labels:
+                        severity: critical
+                        category: container
+                    annotations:
+                        summary: "Container {{ $labels.pod }} critical memory"
+                        description: "Container {{ $labels.pod }} memory usage is {{ $value }}% — risk of OOM."
+            - name: strafor-service-alerts
+              interval: 30s
+              rules:
+                  - alert: ServiceHighErrorRate
+                    expr: strafor:http_error_ratio:rate5m > 0.05
+                    for: 5m
+                    labels:
+                        severity: warning
+                        category: service
+                    annotations:
+                        summary: "Service {{ $labels.service }} high error rate"
+                        description: "Service {{ $labels.service }} error rate is {{ $value }} for 5 minutes."
+                  - alert: ServiceHighLatencyP95
+                    expr: strafor:http_latency_p95:5m > 2
+                    for: 5m
+                    labels:
+                        severity: warning
+                        category: service
+                    annotations:
+                        summary: "Service {{ $labels.service }} high latency (P95)"
+                        description: "Service {{ $labels.service }} P95 latency is {{ $value }}s for 5 minutes."
+            - name: strafor-observability-alerts
+              interval: 30s
+              rules:
+                  - alert: PrometheusDown
+                    expr: up{job="prometheus"} == 0
+                    for: 1m
+                    labels:
+                        severity: critical
+                        category: observability
+                    annotations:
+                        summary: "Prometheus is down"
+                  - alert: GrafanaDown
+                    expr: up{job="grafana"} == 0
+                    for: 1m
+                    labels:
+                        severity: warning
+                        category: observability
+                    annotations:
+                        summary: "Grafana is down"
+                  - alert: LokiDown
+                    expr: up{job="loki"} == 0
+                    for: 2m
+                    labels:
+                        severity: warning
+                    annotations:
+                        summary: "Loki is down"
+                  - alert: TempoDown
+                    expr: up{job="tempo"} == 0
+                    for: 2m
+                    labels:
+                        severity: warning
+                    annotations:
+                        summary: "Tempo is down"
+                  - alert: AlertmanagerDown
+                    expr: up{job="alertmanager"} == 0
+                    for: 1m
+                    labels:
+                        severity: critical
+                    annotations:
+                        summary: "Alertmanager is down"

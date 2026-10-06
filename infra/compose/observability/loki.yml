@@ -1,0 +1,17 @@
+# Loki — log aggregation. Single-binary mode for single-host compose.
+services:
+    loki:
+        image: grafana/loki:3.6.16
+        container_name: loki
+        restart: unless-stopped
+        ports:
+            - '3100:3100'
+        command:
+            - -config.file=/etc/loki/loki-config.yml
+        volumes:
+            - ../../observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+            - loki-data:/loki
+        deploy:
+            resources:
+                limits:
+                    memory: 512M

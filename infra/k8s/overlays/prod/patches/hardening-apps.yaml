@@ -1,0 +1,380 @@
+# Pod hardening for the stateless app services (strategic-merge patches).
+#
+# Every pod gets:
+#   - serviceAccountName: strafor-workload + label azure.workload.identity/use
+#     (Workload Identity webhook injects the federated token the CSI
+#     provider uses to reach Key Vault)
+#   - runAsNonRoot + explicit numeric runAsUser/runAsGroup/fsGroup
+#     (image USERs are non-numeric — `node`, `app` — so runAsNonRoot alone
+#     would be rejected by the kubelet)
+#   - seccompProfile RuntimeDefault
+#   - container: allowPrivilegeEscalation=false, capabilities drop ALL,
+#     readOnlyRootFilesystem=true
+#   - emptyDir /tmp (Node/Python write temp files; root fs is read-only)
+#   - a secrets-store.csi.k8s.io volume mounting strafor-keyvault, which
+#     also triggers the sync of the `strafor-secrets` Secret used by
+#     envFrom (see secretproviderclass.yaml)
+#   - a CPU limit (base only set memory limits)
+#
+# node images run as uid/gid 1000; ai-matching's `app` user is a debian
+# system user -> uid/gid 999 (verify with `docker run --rm <img> id app`
+# if the Dockerfile base image changes).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: api
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: api
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: '1'
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      # compose maps exports-data here; base was missing it.
+                      - { name: exports, mountPath: /app/secure_uploads/exports }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: exports
+                  persistentVolumeClaim: { claimName: strafor-exports }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: identity-auth
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: identity-auth
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 500m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: gateway
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: gateway
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 500m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: documents-resumes
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: documents-resumes
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 500m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: notifications
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: notifications
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 500m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: ai-matching
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                # `app` is a debian system user -> uid/gid 999.
+                runAsNonRoot: true
+                runAsUser: 999
+                runAsGroup: 999
+                fsGroup: 999
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: ai-matching
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: '1'
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: ai-matching-worker
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 999
+                runAsGroup: 999
+                fsGroup: 999
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: worker
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: '1'
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: analytics
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: analytics
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 500m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    namespace: strafor
+    name: web
+spec:
+    template:
+        metadata:
+            labels:
+                azure.workload.identity/use: 'true'
+        spec:
+            serviceAccountName: strafor-workload
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                fsGroup: 1000
+                seccompProfile: { type: RuntimeDefault }
+            containers:
+                - name: web
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: { drop: ['ALL'] }
+                  resources:
+                      limits:
+                          cpu: 500m
+                  volumeMounts:
+                      - { name: tmp, mountPath: /tmp }
+                      # Next.js standalone writes ISR/image cache here.
+                      # Adjust if outputFileTracingRoot changes the layout.
+                      - { name: next-cache, mountPath: /app/apps/web/.next/cache }
+                      - { name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true }
+            volumes:
+                - { name: tmp, emptyDir: {} }
+                - { name: next-cache, emptyDir: {} }
+                - name: secrets-store
+                  csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                          secretProviderClass: strafor-keyvault

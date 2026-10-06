@@ -1,0 +1,94 @@
+# ai-matching — candidate↔vacancy scoring service (FastAPI + Celery worker).
+# Merge into the root docker-compose.yml during integration (see README.md).
+services:
+    ai-matching:
+        build:
+            context: ../../../apps/ai-matching
+            dockerfile: Dockerfile
+        environment:
+            DATABASE_URL: postgres://${POSTGRES_USER:-strafor}:${POSTGRES_PASSWORD:-devpassword}@db:5432/strafor_ai
+            REDIS_URL: redis://redis:6379/0
+            RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672//
+            DOCUMENTS_URL: ${DOCUMENTS_URL:-http://documents-resumes:3004}
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN:-dev-service-token}
+            LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+            OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+            ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+            LLM_MONTHLY_BUDGET_USD: ${LLM_MONTHLY_BUDGET_USD:-50}
+            # Observability
+            SERVICE_NAME: ai-matching
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            db:
+                condition: service_healthy
+            redis:
+                condition: service_started
+            rabbitmq:
+                condition: service_started
+        healthcheck:
+            test:
+                - CMD-SHELL
+                - python -c "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://localhost:3005/health',timeout=4).status==200 else 1)"
+            interval: 10s
+            timeout: 5s
+            retries: 6
+            start_period: 15s
+        labels:
+            prometheus.scrape: 'true'
+            prometheus.port: '3005'
+            prometheus.path: '/metrics'
+        ports:
+            - '3005:3005'
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 1G
+
+    ai-matching-worker:
+        build:
+            context: ../../../apps/ai-matching
+            dockerfile: Dockerfile
+        # API container owns migrations/seeding; the worker skips them.
+        command: ['celery', '-A', 'app.worker', 'worker', '--loglevel=INFO', '--concurrency=2']
+        environment:
+            SKIP_MIGRATIONS: '1'
+            DATABASE_URL: postgres://${POSTGRES_USER:-strafor}:${POSTGRES_PASSWORD:-devpassword}@db:5432/strafor_ai
+            REDIS_URL: redis://redis:6379/0
+            RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672//
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN:-dev-service-token}
+            LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+            OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+            ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+            LLM_MONTHLY_BUDGET_USD: ${LLM_MONTHLY_BUDGET_USD:-50}
+            # Observability (traces only — worker has no HTTP /metrics; its
+            # task metrics are scraped via celery-exporter).
+            SERVICE_NAME: ai-matching-worker
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            ai-matching:
+                condition: service_started
+            db:
+                condition: service_healthy
+            redis:
+                condition: service_started
+            rabbitmq:
+                condition: service_started
+        # The worker is a Celery process, not an HTTP server — override the
+        # Dockerfile's HTTP healthcheck with a process liveness probe.
+        healthcheck:
+            test: ['CMD-SHELL', 'celery -A app.worker inspect ping -d celery@$$HOSTNAME || exit 1']
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 20s
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 1G

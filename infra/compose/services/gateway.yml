@@ -1,0 +1,65 @@
+# gateway service fragment — merged into the root docker-compose.yml
+# during integration (see infra/compose/services/README.md).
+services:
+    gateway:
+        build:
+            context: ../../.. # repo root
+            dockerfile: apps/gateway/Dockerfile
+        environment:
+            PORT: '8081'
+            NODE_ENV: production
+            # Upstreams. Empty → falls back to API_URL (the monolith).
+            API_URL: ${API_URL:-http://api:3000}
+            IDENTITY_URL: ${IDENTITY_URL:-http://identity-auth:3001}
+            IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://identity-auth:3001/.well-known/jwks.json}
+            JWT_ISSUER: ${JWT_ISSUER:-strafor-identity}
+            VACANCIES_URL: ${VACANCIES_URL:-}
+            CANDIDATES_URL: ${CANDIDATES_URL:-}
+            # Extracted recruitment service (strangler cutover for vacancies/
+            # candidates/applications/public + ai/process-feedback). Empty →
+            # those paths fall back to the monolith with a /api/v1→/api rewrite.
+            RECRUITMENT_CORE_URL: ${RECRUITMENT_CORE_URL:-}
+            DOCUMENTS_URL: ${DOCUMENTS_URL:-}
+            NOTIFICATIONS_URL: ${NOTIFICATIONS_URL:-}
+            AI_SERVICE_URL: ${AI_SERVICE_URL:-}
+            # hr-core has no monolith /v1 equivalent — default straight to the
+            # service instead of falling back to api.
+            HR_CORE_URL: ${HR_CORE_URL:-http://hr-core:3010}
+            TIME_ATTENDANCE_URL: ${TIME_ATTENDANCE_URL:-http://time-attendance:3011}
+            PAYROLL_ADAPTER_URL: ${PAYROLL_ADAPTER_URL:-http://payroll-adapter:3012}
+            HR_SERVICES_URL: ${HR_SERVICES_URL:-http://hr-services:3014}
+            CALENDAR_BRIDGE_URL: ${CALENDAR_BRIDGE_URL:-http://calendar-bridge:3016}
+            STATIC_FALLBACK_URL: ${STATIC_FALLBACK_URL:-http://web:3010}
+            REDIS_URL: redis://redis:6379
+            CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+            PROXY_TIMEOUT_MS: ${PROXY_TIMEOUT_MS:-10000}
+            UPLOAD_TIMEOUT_MS: ${UPLOAD_TIMEOUT_MS:-30000}
+            # Observability
+            SERVICE_NAME: gateway
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            api:
+                condition: service_started
+            identity-auth:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD-SHELL', 'wget -qO- http://localhost:8081/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 6
+        labels:
+            prometheus.scrape: 'true'
+            prometheus.port: '8081'
+            prometheus.path: '/metrics'
+        ports:
+            - '8081:8081'
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 256M

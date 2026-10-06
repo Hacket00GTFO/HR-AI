@@ -1,0 +1,52 @@
+# calendar-bridge — Microsoft 365 / Exchange calendar wrapper for interview
+# scheduling (port 3016, db strafor_integrations). Deterministic stub
+# provider when M365_* credentials are absent.
+# Merged into the root docker-compose.yml via the top-level `include:` list.
+#
+# Internal API for recruitment-core (interview scheduling) and, later, the
+# employee portal. X-Service-Token or HR user identity; admins are 403.
+services:
+    calendar-bridge:
+        build:
+            context: ../../.. # repo root
+            dockerfile: apps/calendar-bridge/Dockerfile
+        environment:
+            NODE_ENV: production
+            PORT: 3016
+            DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/strafor_integrations
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN}
+            # Microsoft 365 / Entra ID app registration (client credentials,
+            # application permission Calendars.ReadWrite). Empty defaults →
+            # the deterministic stub provider is active.
+            M365_TENANT_ID: ${M365_TENANT_ID:-}
+            M365_CLIENT_ID: ${M365_CLIENT_ID:-}
+            M365_CLIENT_SECRET: ${M365_CLIENT_SECRET:-}
+            RABBITMQ_URL: ${RABBITMQ_URL}
+            RABBITMQ_EXCHANGE: domain.events
+            # Observability
+            SERVICE_NAME: calendar-bridge
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        depends_on:
+            db:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD-SHELL', 'wget -qO- http://localhost:3016/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 6
+        labels:
+            prometheus.scrape: 'true'
+            prometheus.port: '3016'
+            prometheus.path: '/metrics'
+        ports:
+            - '3016:3016'
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 256M

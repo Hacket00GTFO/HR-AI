@@ -1,0 +1,25 @@
+# cert-manager TLS + security headers.
+# Built-in nginx annotations only — configuration-snippet/server-snippet
+# can inject arbitrary NGINX config and are disabled by default on many
+# hardened ingress-nginx installs (allow-snippet-annotations=false).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+    name: strafor
+    namespace: strafor
+    annotations:
+        # cert-manager ClusterIssuer — create it separately (see README).
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+        # TLS enforcement
+        nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+        nginx.ingress.kubernetes.io/force-ssl-redirect: 'true'
+        # Security headers (built-in annotations)
+        nginx.ingress.kubernetes.io/frame-deny: 'true' # X-Frame-Options: DENY
+        nginx.ingress.kubernetes.io/content-type-nosniff: 'true' # X-Content-Type-Options
+        nginx.ingress.kubernetes.io/browser-xss-filter: 'true' # X-XSS-Protection
+        nginx.ingress.kubernetes.io/hsts: 'true'
+        nginx.ingress.kubernetes.io/hsts-max-age: '31536000'
+        nginx.ingress.kubernetes.io/hsts-include-subdomains: 'true'
+        nginx.ingress.kubernetes.io/referrer-policy: 'strict-origin-when-cross-origin'
+        # NOTE: a Content-Security-Policy needs configuration-snippet;
+        # only add it if the controller has snippets enabled.

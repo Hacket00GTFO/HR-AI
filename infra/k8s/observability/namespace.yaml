@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+    name: strafor-observability
+    labels:
+        app.kubernetes.io/part-of: strafor
+        app.kubernetes.io/component: observability

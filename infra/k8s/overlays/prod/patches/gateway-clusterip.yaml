@@ -1,0 +1,9 @@
+# Prod fronts the gateway exclusively through the ingress — no public
+# LoadBalancer on the service itself.
+apiVersion: v1
+kind: Service
+metadata:
+    name: gateway
+    namespace: strafor
+spec:
+    type: ClusterIP

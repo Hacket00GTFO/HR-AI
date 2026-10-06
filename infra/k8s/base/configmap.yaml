@@ -1,0 +1,60 @@
+# Shared, non-secret environment for all StraforAI workloads.
+# Per-service secrets live in secrets.yaml (templated — never commit values).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: strafor-config
+    namespace: strafor
+    labels:
+        app.kubernetes.io/part-of: strafor
+data:
+    NODE_ENV: "production"
+
+    # ---- Platform endpoints (in-cluster DNS) ----
+    POSTGRES_HOST: "strafor-db"
+    POSTGRES_PORT: "5432"
+    POSTGRES_USER: "strafor"
+    POSTGRES_DB: "innovation" # legacy monolith DB; services own strafor_* DBs
+    REDIS_URL: "redis://strafor-redis:6379"
+    RABBITMQ_HOST: "strafor-rabbitmq"
+    RABBITMQ_PORT: "5672"
+    RABBITMQ_USER: "strafor"
+    RABBITMQ_EXCHANGE: "domain.events"
+    MINIO_ENDPOINT: "strafor-minio"
+    MINIO_PORT: "9000"
+    MINIO_BUCKET: "strafor-documents"
+    MINIO_USE_SSL: "false"
+    SMTP_HOST: "strafor-mailpit"
+    SMTP_PORT: "1025"
+    SMTP_FROM: "StraforAI <no-reply@strafor.local>"
+
+    # ---- Service URLs (container-to-container, gateway routing) ----
+    API_URL: "http://api:3000"
+    IDENTITY_URL: "http://identity-auth:3001"
+    IDENTITY_JWKS_URL: "http://identity-auth:3001/.well-known/jwks.json"
+    VACANCIES_URL: "" # unset → falls back to API_URL (monolith)
+    CANDIDATES_URL: ""
+    DOCUMENTS_URL: "http://documents-resumes:3004"
+    AI_SERVICE_URL: "http://ai-matching:3005"
+    ANALYTICS_URL: "http://analytics:3008"
+    NOTIFICATIONS_URL: "http://notifications:3007"
+    GATEWAY_URL: "http://gateway:8080"
+    STATIC_FALLBACK_URL: ""
+
+    # ---- Auth / tokens ----
+    JWT_ISSUER: "strafor-identity"
+    ACCESS_TOKEN_TTL: "15m"
+    REFRESH_TOKEN_TTL_DAYS: "7"
+    JWT_EXPIRES_IN: "15m"
+    ALLOW_LEGACY_HS256: "false"
+    AUTH_MODE: "v1"
+
+    # ---- AI matching ----
+    LLM_PROVIDER: "mock" # openai | anthropic | mock
+    LLM_MONTHLY_BUDGET_USD: "50"
+
+    # ---- Gateway tuning ----
+    PROXY_TIMEOUT_MS: "10000"
+    UPLOAD_TIMEOUT_MS: "30000"
+    PUBLIC_BASE_URL: "http://localhost:8080"
+    CORS_ORIGIN: "http://localhost:3010"

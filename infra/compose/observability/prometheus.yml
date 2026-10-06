@@ -1,0 +1,27 @@
+services:
+    prometheus:
+        image: prom/prometheus:v3.13.2
+        container_name: prometheus
+        restart: unless-stopped
+        # Required for docker_sd_configs: the container user must be able to read
+        # /var/run/docker.sock (root:root inside Docker Desktop's VM).
+        user: root
+        ports:
+            - '9090:9090'
+        volumes:
+            - ../../observability/prometheus:/etc/prometheus:ro
+            - prometheus-data:/prometheus
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+        command:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-90d}
+            - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-20GB}
+            - --web.enable-remote-write-receiver
+            - --enable-feature=exemplar-storage
+            - --web.console.libraries=/usr/share/prometheus/console_libraries
+            - --web.console.templates=/usr/share/prometheus/consoles
+        deploy:
+            resources:
+                limits:
+                    memory: 1G

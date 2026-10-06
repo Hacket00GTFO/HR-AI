@@ -1,0 +1,46 @@
+# Grafana — dashboards UI. NOT published on a host port in the base compose.
+# Access is via the Next.js BFF at /api/grafana/* which injects X-WEBAUTH-USER.
+services:
+    grafana:
+        image: grafana/grafana:13.0.8
+        container_name: grafana
+        restart: unless-stopped
+        environment:
+            # Sub-path serving — Grafana generates asset/redirect URLs with the
+            # /api/grafana prefix so every request routes back through the BFF.
+            GF_SERVER_ROOT_URL: '%(protocol)s://%(domain)s/api/grafana/'
+            GF_SERVER_SERVE_FROM_SUB_PATH: 'true'
+            # Auth proxy — the BFF injects X-WEBAUTH-USER
+            GF_SECURITY_ALLOW_EMBEDDING: 'true'
+            GF_SECURITY_COOKIE_SAMESITE: 'lax'
+            GF_AUTH_PROXY_ENABLED: 'true'
+            GF_AUTH_PROXY_HEADER_NAME: 'X-WEBAUTH-USER'
+            GF_AUTH_PROXY_HEADER_PROPERTY: 'email'
+            GF_AUTH_PROXY_HEADERS: 'Name:X-WEBAUTH-NAME'
+            GF_AUTH_PROXY_AUTO_SIGN_UP: 'true'
+            GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: 'false'
+            GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+            GF_AUTH_ANONYMOUS_ENABLED: 'false'
+            # Auto-assign admin role to proxied users
+            GF_USERS_AUTO_ASSIGN_ORG: 'true'
+            GF_USERS_AUTO_ASSIGN_ORG_ROLE: 'Admin'
+            # Disable features that don't work behind a reverse proxy
+            GF_LIVE_MAX_CONNECTIONS: '0'
+            GF_ANALYTICS_REPORTING_ENABLED: 'false'
+            GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+            GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+            # Break-glass admin password (only used if you publish Grafana via dev override)
+            GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+            # Enable features for trace exploration
+            GF_FEATURE_TOGGLES_ENABLE: 'traceqlEditor,tempoServiceGraph'
+            # Logging
+            GF_LOG_MODE: 'console'
+            GF_LOG_LEVEL: 'info'
+        volumes:
+            - grafana-data:/var/lib/grafana
+            - ../../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+            - ../../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+        deploy:
+            resources:
+                limits:
+                    memory: 256M

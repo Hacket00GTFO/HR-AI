@@ -1,0 +1,163 @@
+# HorizontalPodAutoscalers for the stateless services (autoscaling/v2).
+# CPU-utilization based, min 2 replicas for HA. ai-matching-worker (Celery)
+# is deliberately not on CPU HPA — scale it on queue depth with KEDA if
+# needed; postgres/redis/rabbitmq/minio stay single-replica.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: gateway
+    labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/part-of: strafor
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: gateway
+    minReplicas: 2
+    maxReplicas: 10
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: web
+    labels:
+        app.kubernetes.io/name: web
+        app.kubernetes.io/part-of: strafor
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: web
+    minReplicas: 2
+    maxReplicas: 6
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: api
+    labels:
+        app.kubernetes.io/name: api
+        app.kubernetes.io/part-of: strafor
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: api
+    minReplicas: 2
+    maxReplicas: 6
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: identity-auth
+    labels:
+        app.kubernetes.io/name: identity-auth
+        app.kubernetes.io/part-of: strafor
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: identity-auth
+    minReplicas: 2
+    maxReplicas: 4
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: documents-resumes
+    labels:
+        app.kubernetes.io/name: documents-resumes
+        app.kubernetes.io/part-of: strafor
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: documents-resumes
+    minReplicas: 2
+    maxReplicas: 4
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: notifications
+    labels:
+        app.kubernetes.io/name: notifications
+        app.kubernetes.io/part-of: strafor
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: notifications
+    minReplicas: 2
+    maxReplicas: 4
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: ai-matching
+    labels:
+        app.kubernetes.io/name: ai-matching
+        app.kubernetes.io/part-of: strafor
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: ai-matching
+    minReplicas: 2
+    maxReplicas: 4
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+    name: analytics
+    labels:
+        app.kubernetes.io/name: analytics
+        app.kubernetes.io/part-of: strafor
+spec:
+    scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: analytics
+    minReplicas: 2
+    maxReplicas: 4
+    metrics:
+        - type: Resource
+          resource:
+              name: cpu
+              target: { type: Utilization, averageUtilization: 70 }

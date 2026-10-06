@@ -1,0 +1,104 @@
+# ai-matching — FastAPI scoring service + Celery worker.
+# The API container owns alembic migrations + skills seeding via
+# docker-entrypoint.sh; the worker sets SKIP_MIGRATIONS=1.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: ai-matching
+    namespace: strafor
+    labels:
+        app.kubernetes.io/name: ai-matching
+        app.kubernetes.io/part-of: strafor
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            app.kubernetes.io/name: ai-matching
+    template:
+        metadata:
+            labels:
+                app.kubernetes.io/name: ai-matching
+                app.kubernetes.io/part-of: strafor
+        spec:
+            containers:
+                - name: ai-matching
+                  image: strafor/ai-matching:latest
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                      - { name: http, containerPort: 3005 }
+                  envFrom:
+                      - configMapRef: { name: strafor-config }
+                      - secretRef: { name: strafor-secrets }
+                  env:
+                      - name: DATABASE_URL
+                        value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/strafor_ai'
+                      - name: RABBITMQ_URL
+                        value: 'amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@$(RABBITMQ_HOST):$(RABBITMQ_PORT)//'
+                  readinessProbe:
+                      httpGet: { path: /health, port: http }
+                      initialDelaySeconds: 10
+                      periodSeconds: 10
+                  livenessProbe:
+                      httpGet: { path: /health, port: http }
+                      initialDelaySeconds: 30
+                      periodSeconds: 20
+                  resources:
+                      requests: { cpu: 100m, memory: 256Mi }
+                      limits: { memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: ai-matching
+    namespace: strafor
+    labels:
+        app.kubernetes.io/name: ai-matching
+        app.kubernetes.io/part-of: strafor
+spec:
+    selector:
+        app.kubernetes.io/name: ai-matching
+    ports:
+        - { name: http, port: 3005, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: ai-matching-worker
+    namespace: strafor
+    labels:
+        app.kubernetes.io/name: ai-matching-worker
+        app.kubernetes.io/part-of: strafor
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            app.kubernetes.io/name: ai-matching-worker
+    template:
+        metadata:
+            labels:
+                app.kubernetes.io/name: ai-matching-worker
+                app.kubernetes.io/part-of: strafor
+        spec:
+            containers:
+                - name: worker
+                  image: strafor/ai-matching:latest
+                  imagePullPolicy: IfNotPresent
+                  command: ['celery', '-A', 'app.worker', 'worker', '--loglevel=INFO', '--concurrency=2']
+                  envFrom:
+                      - configMapRef: { name: strafor-config }
+                      - secretRef: { name: strafor-secrets }
+                  env:
+                      - name: SKIP_MIGRATIONS
+                        value: '1'
+                      - name: DATABASE_URL
+                        value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/strafor_ai'
+                      - name: RABBITMQ_URL
+                        value: 'amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@$(RABBITMQ_HOST):$(RABBITMQ_PORT)//'
+                  livenessProbe:
+                      exec:
+                          command: ['celery', '-A', 'app.worker', 'inspect', 'ping']
+                      initialDelaySeconds: 30
+                      periodSeconds: 60
+                  resources:
+                      requests: { cpu: 100m, memory: 256Mi }
+                      limits: { memory: 1Gi }

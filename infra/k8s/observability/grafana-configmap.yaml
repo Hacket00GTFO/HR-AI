@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: grafana-config
+data:
+    datasources.yml: |
+        apiVersion: 1
+        datasources:
+            - name: Prometheus
+              uid: prometheus
+              type: prometheus
+              access: proxy
+              url: http://prometheus:9090
+              isDefault: true
+              editable: false
+              jsonData:
+                  exemplarTraceIdDestinations:
+                      - name: traceID
+                        datasourceUid: tempo
+                        url: '$${__value.raw}'
+                  timeInterval: '15s'
+            - name: Loki
+              uid: loki
+              type: loki
+              access: proxy
+              url: http://loki:3100
+              editable: false
+              jsonData:
+                  derivedFields:
+                      - name: TraceID
+                        matcherRegex: '"trace_id":"(\w+)"'
+                        url: '$${__value.raw}'
+                        datasourceUid: tempo
+                  maxLines: 1000
+            - name: Tempo
+              uid: tempo
+              type: tempo
+              access: proxy
+              url: http://tempo:3200
+              editable: false
+              jsonData:
+                  tracesToLogsV2:
+                      datasourceUid: loki
+                      tags: ['service', 'http.method', 'http.route']
+                      spanStartTimeShift: '-5m'
+                      spanEndTimeShift: '5m'
+                      filterByTraceID: false
+                      filterBySpanID: false
+                      customQuery: true
+                      query: '{service="$${__span.tags.service}"} | json | trace_id="$${__trace.traceId}"'
+                  serviceMap:
+                      datasourceUid: prometheus
+                  nodeGraph:
+                      enabled: true
+            - name: Alertmanager
+              uid: alertmanager
+              type: alertmanager
+              access: proxy
+              url: http://alertmanager:9093
+              editable: false
+              jsonData:
+                  implementation: prometheus
+    dashboards.yml: |
+        apiVersion: 1
+        providers:
+            - name: StraforAI
+              orgId: 1
+              folder: StraforAI
+              type: file
+              disableDeletion: true
+              updateIntervalSeconds: 30
+              allowUiUpdates: false
+              options:
+                  path: /var/lib/grafana/dashboards
+                  foldersFromFilesStructure: false
+    grafana.ini: |
+        [server]
+        root_url = %(protocol)s://%(domain)s/api/grafana/
+        serve_from_sub_path = true
+        [security]
+        allow_embedding = true
+        cookie_samesite = lax
+        [auth.proxy]
+        enabled = true
+        header_name = X-WEBAUTH-USER
+        header_property = email
+        headers = Name:X-WEBAUTH-NAME
+        auto_sign_up = true
+        enable_login_token = false
+        [auth]
+        disable_login_form = true
+        [auth.anonymous]
+        enabled = false
+        [users]
+        auto_assign_org = true
+        auto_assign_org_role = Admin
+        [analytics]
+        reporting_enabled = false
+        check_for_updates = false
+        check_for_plugin_updates = false
+        [log]
+        mode = console
+        level = info
+        [feature_toggles]
+        enable = traceqlEditor,tempoServiceGraph

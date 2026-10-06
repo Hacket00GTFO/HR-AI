@@ -1,0 +1,57 @@
+# Development compose — run from the repo root:
+#   docker compose -f infra/compose/docker-compose.dev.yml up db
+# then either `pnpm --filter @strafor/api dev` locally, or run the api
+# container too:
+#   docker compose -f infra/compose/docker-compose.dev.yml --profile api up
+#
+# Paths below are relative to THIS file's directory (infra/compose/).
+services:
+    db:
+        # pgvector image — required for `CREATE EXTENSION vector` (migration 0002).
+        image: pgvector/pgvector:pg16
+        environment:
+            POSTGRES_DB: ${POSTGRES_DB:-innovation}
+            POSTGRES_USER: ${POSTGRES_USER:-strafor}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+        volumes:
+            - pgdata-dev:/var/lib/postgresql/data
+            # No initdb schema mount: apps/api runs `node-pg-migrate up` at boot.
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        ports:
+            - '5432:5432'
+
+    api:
+        profiles: ['api']
+        image: node:22-alpine
+        working_dir: /repo/apps/api
+        # Install workspace deps once (anonymous volumes keep the bind-mounted
+        # Windows node_modules from colliding with the container's), then run
+        # the server under node --watch for hot reload.
+        command: >
+            sh -c "cd /repo && corepack enable
+            && pnpm install --filter @strafor/api
+            && cd apps/api && exec node --watch server.js"
+        environment:
+            DATABASE_URL: postgres://${POSTGRES_USER:-strafor}:${POSTGRES_PASSWORD:-devpassword}@db:5432/${POSTGRES_DB:-innovation}
+            PORT: '3000'
+            NODE_ENV: development
+            JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+            JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+            CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+            RESUMES_DIR: /repo/secure_uploads/resumes
+        volumes:
+            - ../../:/repo
+            - /repo/node_modules
+            - /repo/apps/api/node_modules
+        ports:
+            - '3000:3000'
+        depends_on:
+            db:
+                condition: service_healthy
+
+volumes:
+    pgdata-dev:

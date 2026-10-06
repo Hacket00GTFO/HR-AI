@@ -1,0 +1,14 @@
+# Prod overrides for the shared ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: strafor-config
+    namespace: strafor
+data:
+    # External SMTP provider (mailpit is removed in this overlay).
+    SMTP_HOST: 'smtp.example.com' # placeholder — real provider host
+    SMTP_PORT: '587'
+    SMTP_FROM: 'StraforAI <no-reply@strafor.example.com>'
+    # Public URLs — used for CORS, links in emails, generated URLs.
+    PUBLIC_BASE_URL: 'https://strafor.example.com'
+    CORS_ORIGIN: 'https://strafor.example.com'
