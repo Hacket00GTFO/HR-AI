@@ -1,0 +1,8 @@
+{
+    "metric": "ndcg_at_5",
+    "value": 0.9948760633174432,
+    "dataset_version": "da868b2ce4c85991",
+    "n_queries": 5,
+    "provider": "mock",
+    "recorded_at": "2026-09-15T17:50:55.217038+00:00"
+}
