@@ -1,0 +1,49 @@
+# PersistentVolumeClaims for prod.
+# storageClassName defaults to managed-csi-premium (AKS premium SSD, ZRS).
+# Override per-cluster via a patch if you use a different provisioner
+# (e.g. managed-csi-premium-v2, azurefile-csi-premium for RWX).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: strafor-redis-data
+    labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/part-of: strafor
+spec:
+    accessModes: ['ReadWriteOnce']
+    storageClassName: managed-csi-premium
+    resources:
+        requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: strafor-rabbitmq-data
+    labels:
+        app.kubernetes.io/name: rabbitmq
+        app.kubernetes.io/part-of: strafor
+spec:
+    accessModes: ['ReadWriteOnce']
+    storageClassName: managed-csi-premium
+    resources:
+        requests:
+            # mnesia + quorum queue data must survive pod restarts.
+            storage: 10Gi
+---
+# api exports dir — exists as a named volume in compose
+# (exports-data:/app/secure_uploads/exports) but was missing from the k8s
+# base; with readOnlyRootFilesystem the app cannot create it at runtime.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: strafor-exports
+    labels:
+        app.kubernetes.io/name: api
+        app.kubernetes.io/part-of: strafor
+spec:
+    accessModes: ['ReadWriteOnce']
+    storageClassName: managed-csi-premium
+    resources:
+        requests:
+            storage: 5Gi

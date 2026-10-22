@@ -1,0 +1,15 @@
+# mailpit is a dev SMTP sink — prod uses an external SMTP provider
+# (host via strafor-config patch, creds via Key Vault smtp-user/smtp-pass).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: strafor-mailpit
+    namespace: strafor
+$patch: delete
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: strafor-mailpit
+    namespace: strafor
+$patch: delete

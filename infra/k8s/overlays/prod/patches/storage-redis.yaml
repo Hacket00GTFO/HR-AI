@@ -1,0 +1,7 @@
+# Replace the dev-grade emptyDir with the strafor-redis-data PVC.
+- op: replace
+  path: /spec/template/spec/volumes/0
+  value:
+      name: data
+      persistentVolumeClaim:
+          claimName: strafor-redis-data

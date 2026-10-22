@@ -1,0 +1,12 @@
+# JSON6902: swap the dev host for the prod host and add the TLS stanza.
+# (Strategic merge can't replace the host — spec.rules merges by `host`,
+# so a merge patch would ADD strafor.example.com instead of replacing
+# strafor.local.)
+- op: replace
+  path: /spec/rules/0/host
+  value: strafor.example.com # placeholder — set the real DNS name
+- op: add
+  path: /spec/tls
+  value:
+      - hosts: ['strafor.example.com']
+        secretName: strafor-tls # cert-manager creates/renews this

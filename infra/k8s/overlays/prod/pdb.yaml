@@ -1,0 +1,136 @@
+# PodDisruptionBudgets — every workload gets one.
+# HPA-managed services run >= 2 replicas so minAvailable: 1 still allows
+# voluntary disruption. Single-replica workloads (db, redis, rabbitmq,
+# minio, ai-matching-worker) also get minAvailable: 1 — it turns
+# `kubectl drain` into a deliberate, operator-confirmed action rather than
+# a silent outage. If that ever wedges a node upgrade, approve the eviction
+# manually (kubectl drain --disable-eviction=false still respects PDBs).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: gateway
+    labels: { app.kubernetes.io/name: gateway, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: gateway }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: web
+    labels: { app.kubernetes.io/name: web, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: web }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: api
+    labels: { app.kubernetes.io/name: api, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: api }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: identity-auth
+    labels: { app.kubernetes.io/name: identity-auth, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: identity-auth }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: documents-resumes
+    labels: { app.kubernetes.io/name: documents-resumes, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: documents-resumes }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: notifications
+    labels: { app.kubernetes.io/name: notifications, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: notifications }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: ai-matching
+    labels: { app.kubernetes.io/name: ai-matching, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: ai-matching }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: ai-matching-worker
+    labels: { app.kubernetes.io/name: ai-matching-worker, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: ai-matching-worker }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: analytics
+    labels: { app.kubernetes.io/name: analytics, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: analytics }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: strafor-db
+    labels: { app.kubernetes.io/name: db, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: db }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: strafor-redis
+    labels: { app.kubernetes.io/name: redis, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: redis }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: strafor-rabbitmq
+    labels: { app.kubernetes.io/name: rabbitmq, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: rabbitmq }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: strafor-minio
+    labels: { app.kubernetes.io/name: minio, app.kubernetes.io/part-of: strafor }
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels: { app.kubernetes.io/name: minio }

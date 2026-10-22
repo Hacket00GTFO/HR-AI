@@ -1,0 +1,8 @@
+# Replace the dev-grade emptyDir with the strafor-rabbitmq-data PVC.
+# mnesia/quorum data must survive pod restarts.
+- op: replace
+  path: /spec/template/spec/volumes/0
+  value:
+      name: data
+      persistentVolumeClaim:
+          claimName: strafor-rabbitmq-data

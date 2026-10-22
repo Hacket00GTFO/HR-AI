@@ -1,0 +1,36 @@
+# Pin every claim that already exists in base to the AKS premium SSD class.
+# Change managed-csi-premium here if the cluster uses another provisioner.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: strafor-resumes
+    namespace: strafor
+spec:
+    storageClassName: managed-csi-premium
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: strafor-minio-data
+    namespace: strafor
+spec:
+    storageClassName: managed-csi-premium
+---
+# NOTE: volumeClaimTemplates list items are replaced wholesale by
+# strategic-merge patching, so the full spec is repeated here — keep it in
+# sync with base/db-statefulset.yaml.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+    name: strafor-db
+    namespace: strafor
+spec:
+    volumeClaimTemplates:
+        - metadata:
+              name: pgdata
+          spec:
+              accessModes: ['ReadWriteOnce']
+              storageClassName: managed-csi-premium
+              resources:
+                  requests:
+                      storage: 10Gi
