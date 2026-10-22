@@ -1,0 +1,213 @@
+global:
+    scrape_interval: 15s
+    evaluation_interval: 15s
+    external_labels:
+        env: ${ENV:-dev}
+        cluster: strafor-compose
+
+rule_files:
+    - rules/*.yml
+
+alerting:
+    alertmanagers:
+        - static_configs:
+              - targets: ['alertmanager:9093']
+
+scrape_configs:
+    # Self-monitoring
+    - job_name: 'prometheus'
+      static_configs:
+          - targets: ['localhost:9090']
+
+    # Docker SD: auto-discovers containers with labels
+    #   prometheus.scrape=true, prometheus.port=<port>, prometheus.path=<path>
+    - job_name: 'docker-apps'
+      docker_sd_configs:
+          - host: unix:///var/run/docker.sock
+      relabel_configs:
+          # Only scrape containers with prometheus.scrape=true
+          - source_labels: [__meta_docker_container_label_prometheus_scrape]
+            regex: 'true'
+            action: keep
+          # Set metrics path from label (default /metrics)
+          - source_labels: [__meta_docker_container_label_prometheus_path]
+            regex: '(.+)'
+            target_label: __metrics_path__
+            replacement: '${1}'
+          # Build scrape address from the container's network IP + prometheus.port label.
+          # (Modern docker_sd exposes the IP per-network as __meta_docker_network_ip;
+          # __meta_docker_container_network_settings_ip_address is empty.)
+          - source_labels: [__meta_docker_network_ip, __meta_docker_container_label_prometheus_port]
+            separator: ':'
+            regex: '(\S+):(\S+)'
+            target_label: __address__
+            replacement: '${1}:${2}'
+          # Service name from compose service label
+          - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+            target_label: service
+          # Container name (strip leading /)
+          - source_labels: [__meta_docker_container_name]
+            regex: '/(.+)'
+            target_label: container
+            replacement: '${1}'
+          # Project label
+          - source_labels: [__meta_docker_container_label_com_docker_compose_project]
+            target_label: compose_project
+      metric_relabel_configs:
+          # Drop high-cardinality cAdvisor metrics that slip through
+          - source_labels: [__name__]
+            regex: 'container_blkio_time_seconds_total|container_cpu_cfs_throttled_seconds_total|container_cpu_schedstat_.*'
+            action: drop
+
+    # cAdvisor — container resource metrics
+    - job_name: 'cadvisor'
+      static_configs:
+          - targets: ['cadvisor:8080']
+      metric_relabel_configs:
+          # Promote the docker container name to the canonical 'container' label
+          - source_labels: [name]
+            regex: '(.+)'
+            target_label: container
+            replacement: '${1}'
+          # Promote the compose service label to 'service' so per-service
+          # aggregations work (overrides the target-level service label below)
+          - source_labels: [container_label_com_docker_compose_service]
+            regex: '(.+)'
+            target_label: service
+            replacement: '${1}'
+          # Drop the raw cadvisor 'name' label to avoid duplicate identity
+          - regex: 'name'
+            action: labeldrop
+          # Drop series with no container (root cgroup / machine-level stats) —
+          # they would otherwise surface as an unnamed 'cadvisor' container
+          - source_labels: [container]
+            regex: ''
+            action: drop
+      relabel_configs:
+          - target_label: service
+            replacement: cadvisor
+
+    # node-exporter — host metrics
+    - job_name: 'node-exporter'
+      static_configs:
+          - targets: ['node-exporter:9100']
+      relabel_configs:
+          - target_label: service
+            replacement: node-exporter
+
+    # postgres-exporter
+    - job_name: 'postgres'
+      static_configs:
+          - targets: ['postgres-exporter:9187']
+      relabel_configs:
+          - target_label: service
+            replacement: postgres
+
+    # redis-exporter
+    - job_name: 'redis'
+      static_configs:
+          - targets: ['redis-exporter:9121']
+      relabel_configs:
+          - target_label: service
+            replacement: redis
+
+    # RabbitMQ built-in prometheus plugin
+    - job_name: 'rabbitmq'
+      static_configs:
+          - targets: ['rabbitmq:15692']
+      metrics_path: /metrics
+      relabel_configs:
+          - target_label: service
+            replacement: rabbitmq
+
+    # MinIO built-in metrics
+    - job_name: 'minio'
+      static_configs:
+          - targets: ['minio:9000']
+      metrics_path: /minio/v2/metrics/cluster
+      relabel_configs:
+          - target_label: service
+            replacement: minio
+
+    # blackbox-exporter — probes /health of each service
+    - job_name: 'blackbox-http'
+      metrics_path: /probe
+      params:
+          module: [http_2xx]
+      static_configs:
+          - targets:
+                # App services
+                - http://api:3000/api/health
+                - http://identity-auth:3001/health
+                - http://gateway:8081/health
+                - http://documents-resumes:3004/health
+                - http://notifications:3007/health
+                - http://ai-matching:3005/health
+                - http://analytics:3008/health
+                - http://web:3010/api/health
+                # Platform services
+                - http://minio:9000/minio/health/live
+                - http://mailpit:8025/api/v1/info
+                # Observability stack self-monitoring
+                - http://prometheus:9090/-/healthy
+                - http://alertmanager:9093/-/healthy
+                - http://grafana:3000/api/grafana/api/health
+                - http://loki:3100/ready
+                - http://tempo:3200/ready
+      relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: target
+          - target_label: __address__
+            replacement: blackbox-exporter:9115
+          # Extract service name from target URL
+          - source_labels: [target]
+            regex: 'http://([a-z0-9-]+):.*'
+            target_label: service
+      metric_relabel_configs:
+          - source_labels: [__param_target]
+            target_label: instance
+
+    # celery-exporter — ai-matching worker task metrics
+    - job_name: 'celery'
+      static_configs:
+          - targets: ['celery-exporter:9808']
+      relabel_configs:
+          - target_label: service
+            replacement: ai-matching-worker
+
+    # Grafana self-monitoring
+    - job_name: 'grafana'
+      static_configs:
+          - targets: ['grafana:3000']
+      metrics_path: /api/grafana/metrics
+      relabel_configs:
+          - target_label: service
+            replacement: grafana
+
+    # Loki self-monitoring
+    - job_name: 'loki'
+      static_configs:
+          - targets: ['loki:3100']
+      metrics_path: /metrics
+      relabel_configs:
+          - target_label: service
+            replacement: loki
+
+    # Tempo self-monitoring
+    - job_name: 'tempo'
+      static_configs:
+          - targets: ['tempo:3200']
+      metrics_path: /metrics
+      relabel_configs:
+          - target_label: service
+            replacement: tempo
+
+    # Alertmanager self-monitoring
+    - job_name: 'alertmanager'
+      static_configs:
+          - targets: ['alertmanager:9093']
+      relabel_configs:
+          - target_label: service
+            replacement: alertmanager

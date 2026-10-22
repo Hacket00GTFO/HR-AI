@@ -1,0 +1,26 @@
+pg_connections_by_db:
+    query: 'SELECT datname AS db, count(*) AS connections FROM pg_stat_activity GROUP BY datname'
+    metrics:
+        - db:
+              usage: 'LABEL'
+              description: 'Database name'
+        - connections:
+              usage: 'GAUGE'
+              description: 'Number of active connections per database'
+
+pg_database_size:
+    query: 'SELECT datname AS db, pg_database_size(datname) AS size_bytes FROM pg_database WHERE datistemplate = false'
+    metrics:
+        - db:
+              usage: 'LABEL'
+              description: 'Database name'
+        - size_bytes:
+              usage: 'GAUGE'
+              description: 'Size of the database in bytes'
+
+pg_long_running_queries:
+    query: "SELECT count(*) AS queries FROM pg_stat_activity WHERE state = 'active' AND now() - query_start > interval '60 seconds'"
+    metrics:
+        - queries:
+              usage: 'GAUGE'
+              description: 'Number of active queries running longer than 60 seconds'

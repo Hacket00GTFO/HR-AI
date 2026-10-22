@@ -1,0 +1,169 @@
+# Kubernetes alerting rules — K8S DEPLOYMENTS ONLY.
+#
+# These rules rely on kube-state-metrics and kubelet/cAdvisor metrics
+# (kube_*, container_*, kubelet_volume_stats_*) which do not exist in the
+# docker-compose stack. The compose Prometheus loads rules/*.yml too, so
+# this file is also mounted there — every expression is scoped to
+# namespace="strafor" and will simply evaluate to no data under compose.
+# Keep the docker-oriented rules in alerts.yml; keep this file k8s-only.
+#
+# In k8s, add this file as a `kubernetes.yml` key in the
+# prometheus-alert-rules ConfigMap
+# (infra/k8s/observability/prometheus-alert-rules-configmap.yaml) — it is
+# mounted at /etc/prometheus/rules alongside recording.yml/alerts.yml.
+# Equivalently: `kubectl -n strafor-observability create configmap
+# prometheus-alert-rules --from-file=infra/observability/prometheus/rules/
+# --dry-run=client -o yaml | kubectl apply -f -` (merging all rule files).
+groups:
+    - name: strafor-kubernetes-pod-alerts
+      interval: 30s
+      rules:
+          - alert: KubeContainerRestarting
+            # kube-state-metrics: restarts counter per container.
+            expr: |
+                increase(kube_pod_container_status_restarts_total{namespace="strafor"}[1h]) > 3
+            for: 5m
+            labels:
+                severity: warning
+                category: kubernetes
+            annotations:
+                summary: 'Container {{ $labels.container }} in {{ $labels.pod }} restarting'
+                description: 'Container {{ $labels.container }} (pod {{ $labels.pod }}) restarted {{ $value }} time(s) in the last hour.'
+
+          - alert: KubeContainerOOMKilled
+            expr: |
+                kube_pod_container_status_last_terminated_reason{namespace="strafor", reason="OOMKilled"} == 1
+            for: 0m
+            labels:
+                severity: critical
+                category: kubernetes
+            annotations:
+                summary: 'Container {{ $labels.container }} OOM-killed'
+                description: 'Container {{ $labels.container }} (pod {{ $labels.pod }}) was OOM-killed. Raise its memory limit or investigate the leak.'
+
+          - alert: KubeContainerCrashLooping
+            expr: |
+                kube_pod_container_status_waiting_reason{namespace="strafor", reason="CrashLoopBackOff"} == 1
+            for: 5m
+            labels:
+                severity: critical
+                category: kubernetes
+            annotations:
+                summary: 'Container {{ $labels.container }} in CrashLoopBackOff'
+                description: 'Container {{ $labels.container }} (pod {{ $labels.pod }}) is crash-looping.'
+
+          - alert: KubeContainerCPUThrottling
+            # cAdvisor: throttled periods / total cfs periods > 25%.
+            expr: |
+                sum by (pod, container) (
+                    rate(container_cpu_cfs_throttled_periods_total{namespace="strafor"}[5m])
+                )
+                /
+                sum by (pod, container) (
+                    rate(container_cpu_cfs_periods_total{namespace="strafor"}[5m])
+                ) > 0.25
+            for: 15m
+            labels:
+                severity: warning
+                category: kubernetes
+            annotations:
+                summary: 'Container {{ $labels.container }} CPU throttled'
+                description: 'Container {{ $labels.container }} (pod {{ $labels.pod }}) is throttled {{ $value | printf "%.1f" }}% of cfs periods. Raise the CPU limit or reduce load.'
+
+          - alert: KubePodPending
+            expr: |
+                kube_pod_status_phase{namespace="strafor", phase="Pending"} == 1
+            for: 10m
+            labels:
+                severity: warning
+                category: kubernetes
+            annotations:
+                summary: 'Pod {{ $labels.pod }} stuck Pending'
+                description: 'Pod {{ $labels.pod }} has been Pending for 10 minutes — check scheduling events, PVC binding, and image pulls.'
+
+          - alert: KubePodNotReady
+            expr: |
+                sum by (pod) (
+                    kube_pod_status_ready{namespace="strafor", condition="true"}
+                ) == 0
+            for: 10m
+            labels:
+                severity: warning
+                category: kubernetes
+            annotations:
+                summary: 'Pod {{ $labels.pod }} not Ready'
+                description: 'Pod {{ $labels.pod }} has had no ready containers for 10 minutes.'
+
+    - name: strafor-kubernetes-capacity-alerts
+      interval: 30s
+      rules:
+          - alert: KubePVCAlmostFull
+            # kubelet volume stats — per-PVC usage above 85%.
+            expr: |
+                (
+                    kubelet_volume_stats_used_bytes{namespace="strafor"}
+                    /
+                    kubelet_volume_stats_capacity_bytes{namespace="strafor"}
+                ) > 0.85
+            for: 5m
+            labels:
+                severity: warning
+                category: kubernetes
+            annotations:
+                summary: 'PVC {{ $labels.persistentvolumeclaim }} above 85%'
+                description: 'PVC {{ $labels.persistentvolumeclaim }} is {{ $value | printf "%.1f" }}% full. Expand the claim or reclaim space.'
+
+          - alert: KubePVCCriticallyFull
+            expr: |
+                (
+                    kubelet_volume_stats_used_bytes{namespace="strafor"}
+                    /
+                    kubelet_volume_stats_capacity_bytes{namespace="strafor"}
+                ) > 0.95
+            for: 2m
+            labels:
+                severity: critical
+                category: kubernetes
+            annotations:
+                summary: 'PVC {{ $labels.persistentvolumeclaim }} above 95%'
+                description: 'PVC {{ $labels.persistentvolumeclaim }} is {{ $value | printf "%.1f" }}% full — imminent outage risk.'
+
+          - alert: KubeHPAAtMaxReplicas
+            # HPA pinned at its ceiling — it can no longer absorb load.
+            expr: |
+                kube_horizontalpodautoscaler_status_current_replicas{namespace="strafor"}
+                ==
+                kube_horizontalpodautoscaler_spec_max_replicas{namespace="strafor"}
+            for: 15m
+            labels:
+                severity: warning
+                category: kubernetes
+            annotations:
+                summary: 'HPA {{ $labels.horizontalpodautoscaler }} at max replicas'
+                description: 'HPA {{ $labels.horizontalpodautoscaler }} has been at its max replica count for 15 minutes — raise maxReplicas or investigate the load.'
+
+          - alert: KubeDeploymentReplicasMismatch
+            expr: |
+                kube_deployment_status_replicas_available{namespace="strafor"}
+                !=
+                kube_deployment_spec_replicas{namespace="strafor"}
+            for: 15m
+            labels:
+                severity: warning
+                category: kubernetes
+            annotations:
+                summary: 'Deployment {{ $labels.deployment }} replicas mismatch'
+                description: 'Deployment {{ $labels.deployment }} has {{ $value }} available replicas, fewer than spec — rollout stuck or pods failing.'
+
+          - alert: KubeStatefulSetReplicasMismatch
+            expr: |
+                kube_statefulset_status_replicas_ready{namespace="strafor"}
+                !=
+                kube_statefulset_spec_replicas{namespace="strafor"}
+            for: 15m
+            labels:
+                severity: warning
+                category: kubernetes
+            annotations:
+                summary: 'StatefulSet {{ $labels.statefulset }} replicas mismatch'
+                description: 'StatefulSet {{ $labels.statefulset }} does not have all replicas ready — postgres may be down.'

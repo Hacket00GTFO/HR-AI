@@ -1,0 +1,19 @@
+{{ define "email.subject" }}[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}{{ end }}
+
+{{ define "email.html" }}
+<table style="border-collapse: collapse; font-family: sans-serif; font-size: 14px;">
+    <tr><td colspan="2" style="background: {{ if eq .Status "firing" }}#e74c3c{{ else }}#27ae60{{ end }}; color: white; padding: 10px; font-size: 16px; font-weight: bold;">
+        {{ .Status | toUpper }} — {{ .CommonLabels.alertname }}
+    </td></tr>
+    <tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Service</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">{{ .CommonLabels.service }}</td></tr>
+    <tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Severity</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">{{ .CommonLabels.severity }}</td></tr>
+    {{ range .Alerts }}
+    <tr><td colspan="2" style="padding: 8px; border-bottom: 1px solid #ddd; background: #f9f9f9;"><strong>{{ .Labels.alertname }}</strong></td></tr>
+    <tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">Description</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">{{ .Annotations.description }}</td></tr>
+    <tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">Started</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">{{ .StartsAt.Format "2006-01-02 15:04:05" }}</td></tr>
+    {{ if .EndsAt }}<tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">Ended</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">{{ .EndsAt.Format "2006-01-02 15:04:05" }}</td></tr>{{ end }}
+    {{ if .Annotations.runbook_url }}<tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">Runbook</td><td style="padding: 8px; border-bottom: 1px solid #ddd;"><a href="{{ .Annotations.runbook_url }}">{{ .Annotations.runbook_url }}</a></td></tr>{{ end }}
+    {{ if .GeneratorURL }}<tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">Source</td><td style="padding: 8px; border-bottom: 1px solid #ddd;"><a href="{{ .GeneratorURL }}">View in Prometheus</a></td></tr>{{ end }}
+    {{ end }}
+</table>
+{{ end }}

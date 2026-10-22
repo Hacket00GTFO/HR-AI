@@ -1,0 +1,6 @@
+# Alertmanager webhook token file.
+# This file is mounted into the Alertmanager container at /etc/alertmanager/webhook.token
+# and used by the webhook receiver's Authorization header.
+# The value must match ALERT_WEBHOOK_TOKEN in the API's environment.
+# Replace CHANGE_ME with the actual token (e.g. `openssl rand -hex 32`).
+CHANGE_ME

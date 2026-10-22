@@ -1,0 +1,78 @@
+server:
+    http_listen_port: 9080
+    grpc_listen_port: 0
+
+positions:
+    filename: /tmp/positions.yaml
+
+clients:
+    - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+    # Docker container logs via docker_sd
+    - job_name: docker
+      docker_sd_configs:
+          - host: unix:///var/run/docker.sock
+            refresh_interval: 15s
+      relabel_configs:
+          # Only scrape containers in the straforai project
+          - source_labels: [__meta_docker_container_label_com_docker_compose_project]
+            regex: 'straforai'
+            action: keep
+          # Container name (strip leading /)
+          - source_labels: [__meta_docker_container_name]
+            regex: '/(.+)'
+            target_label: container
+            replacement: '${1}'
+          # Service name from compose service label
+          - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+            target_label: service
+          # Image name (without tag)
+          - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+            target_label: job
+      pipeline_stages:
+          # Parse JSON logs (pino, python-json-logger)
+          - json:
+                expressions:
+                    level: level
+                    msg: msg
+                    service_from_log: service
+                    correlationId: correlationId
+                    trace_id: trace_id
+                    span_id: span_id
+                    timestamp: time
+          # Use the service label from the log if present (overrides docker label)
+          - labels:
+                service:
+          # Add level as a label (low cardinality: debug/info/warn/error)
+          - labels:
+                level:
+          # Drop lines that contain authorization headers (security)
+          - drop:
+                expression: '"authorization"'
+          # Use timestamp from log if present
+          - timestamp:
+                source: timestamp
+                format: RFC3339Nano
+                fallback_formats:
+                    - ISO8601
+          # Output the message field as the log line
+          - output:
+                source: msg
+
+    # Host logs (optional — for Docker Desktop/WSL2 system logs)
+    - job_name: syslog
+      static_configs:
+          - targets: [localhost]
+            labels:
+                job: syslog
+                __path__: /var/log/messages
+      pipeline_stages:
+          - regex:
+                expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+(?P<host>\S+)\s+(?P<service>[^:]+):\s+(?P<level>\w+):\s+(?P<message>.*)$'
+          - timestamp:
+                source: timestamp
+                format: 'Jan 02 15:04:05'
+          - labels:
+                level:
+                service:

@@ -1,0 +1,94 @@
+groups:
+    - name: strafor-recording
+      interval: 30s
+      rules:
+          # Container CPU (cAdvisor)
+          - record: strafor:container_cpu_percent:rate2m
+            expr: |
+                100 * sum by (container, service) (
+                  rate(container_cpu_usage_seconds_total{container_label_com_docker_compose_project="straforai"}[2m])
+                )
+          # Container memory working set
+          - record: strafor:container_memory_working_set_bytes
+            expr: |
+                max by (container, service) (
+                  container_memory_working_set_bytes{container_label_com_docker_compose_project="straforai"}
+                )
+          # Container memory limit
+          - record: strafor:container_memory_limit_bytes
+            expr: |
+                max by (container, service) (
+                  container_spec_memory_limit_bytes{container_label_com_docker_compose_project="straforai"} > 0
+                )
+          # Container memory percent (only when limit > 0)
+          - record: strafor:container_memory_percent
+            expr: |
+                100 * strafor:container_memory_working_set_bytes
+                / strafor:container_memory_limit_bytes
+                or vector(0)
+          # Container network
+          - record: strafor:container_network_rx_bytes:rate2m
+            expr: |
+                sum by (container, service) (
+                  rate(container_network_receive_bytes_total{container_label_com_docker_compose_project="straforai"}[2m])
+                )
+          - record: strafor:container_network_tx_bytes:rate2m
+            expr: |
+                sum by (container, service) (
+                  rate(container_network_transmit_bytes_total{container_label_com_docker_compose_project="straforai"}[2m])
+                )
+          # Container filesystem I/O
+          - record: strafor:container_fs_read_bytes:rate2m
+            expr: |
+                sum by (container, service) (
+                  rate(container_fs_reads_bytes_total{container_label_com_docker_compose_project="straforai"}[2m])
+                )
+          - record: strafor:container_fs_write_bytes:rate2m
+            expr: |
+                sum by (container, service) (
+                  rate(container_fs_writes_bytes_total{container_label_com_docker_compose_project="straforai"}[2m])
+                )
+          # Container restarts (changes in start_time over 1h)
+          - record: strafor:container_restarts:changes1h
+            expr: |
+                changes(container_start_time_seconds{container_label_com_docker_compose_project="straforai"}[1h])
+          # Container OOM kills
+          - record: strafor:container_oom:increase15m
+            expr: |
+                increase(container_oom_events_total{container_label_com_docker_compose_project="straforai"}[15m])
+          # HTTP RED metrics (from app /metrics)
+          - record: strafor:http_requests:rate5m
+            expr: |
+                sum by (service, route, method, status_class) (
+                  rate(http_requests_total[5m])
+                )
+          - record: strafor:http_error_ratio:rate5m
+            expr: |
+                sum by (service) (rate(http_requests_total{status_class="5xx"}[5m]))
+                /
+                sum by (service) (rate(http_requests_total[5m]))
+          - record: strafor:http_latency_p50:5m
+            expr: |
+                histogram_quantile(0.50, sum by (service, le) (
+                  rate(http_request_duration_seconds_bucket[5m])
+                ))
+          - record: strafor:http_latency_p95:5m
+            expr: |
+                histogram_quantile(0.95, sum by (service, le) (
+                  rate(http_request_duration_seconds_bucket[5m])
+                ))
+          - record: strafor:http_latency_p99:5m
+            expr: |
+                histogram_quantile(0.99, sum by (service, le) (
+                  rate(http_request_duration_seconds_bucket[5m])
+                ))
+          # Blackbox probe success
+          - record: strafor:probe_success
+            expr: probe_success
+          # Host disk free (node-exporter)
+          - record: strafor:host_disk_free_bytes
+            expr: |
+                node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}
+          - record: strafor:host_disk_total_bytes
+            expr: |
+                node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}

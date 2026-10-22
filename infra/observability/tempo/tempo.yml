@@ -1,0 +1,48 @@
+server:
+    http_listen_port: 3200
+    log_level: info
+
+distributor:
+    receivers:
+        otlp:
+            protocols:
+                grpc:
+                    endpoint: 0.0.0.0:4317
+                http:
+                    endpoint: 0.0.0.0:4318
+
+storage:
+    trace:
+        backend: local
+        local:
+            path: /var/tempo/traces
+        wal:
+            path: /var/tempo/wal
+
+compactor:
+    compaction:
+        block_retention: 336h
+
+metrics_generator:
+    registry:
+        external_labels:
+            source: tempo
+            cluster: strafor-compose
+    storage:
+        path: /var/tempo/generator/wal
+        remote_write:
+            - url: http://prometheus:9090/api/v1/write
+              send_exemplars: true
+    traces_storage:
+        path: /var/tempo/generator/traces
+    processor:
+        service_graphs:
+            dimensions: ['http.method', 'http.status_code', 'http.route']
+        span_metrics:
+            dimensions: ['http.method', 'http.status_code', 'http.route']
+
+overrides:
+    defaults:
+        metrics_generator:
+            processors: [service-graphs, span-metrics]
+            generate_native_histograms: true

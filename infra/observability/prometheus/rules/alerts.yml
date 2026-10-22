@@ -1,0 +1,351 @@
+# StraforAI alerting rules.
+# Groups:
+# 1. Container alerts (cAdvisor metrics)
+# 2. Service alerts (RED metrics)
+# 3. Platform datastore alerts
+# 4. Observability stack self-monitoring
+# 5. AI/LLM alerts
+# 6. Meta alerts (Prometheus/Alertmanager health)
+
+groups:
+    # ---- Container alerts ----
+    - name: strafor-container-alerts
+      interval: 30s
+      rules:
+          - alert: ContainerDown
+            expr: strafor:probe_success{job="blackbox-http"} == 0
+            for: 2m
+            labels:
+                severity: critical
+                category: container
+            annotations:
+                summary: 'Container {{ $labels.service }} is down'
+                description: 'Container {{ $labels.service }} has been unreachable for 2 minutes.'
+                runbook_url: 'docs/observability/runbooks/container-down.md'
+
+          - alert: ContainerHighCPU
+            expr: strafor:container_cpu_percent:rate2m > 85
+            for: 10m
+            labels:
+                severity: warning
+                category: container
+            annotations:
+                summary: 'Container {{ $labels.container }} high CPU'
+                description: 'Container {{ $labels.container }} ({{ $labels.service }}) CPU usage is {{ $value | printf "%.1f" }}% for 10 minutes.'
+                runbook_url: 'docs/observability/runbooks/container-high-cpu.md'
+
+          - alert: ContainerHighMemory
+            expr: strafor:container_memory_percent > 85
+            for: 10m
+            labels:
+                severity: warning
+                category: container
+            annotations:
+                summary: 'Container {{ $labels.container }} high memory'
+                description: 'Container {{ $labels.container }} ({{ $labels.service }}) memory usage is {{ $value | printf "%.1f" }}% for 10 minutes.'
+                runbook_url: 'docs/observability/runbooks/container-high-memory.md'
+
+          - alert: ContainerCriticalMemory
+            expr: strafor:container_memory_percent > 95
+            for: 2m
+            labels:
+                severity: critical
+                category: container
+            annotations:
+                summary: 'Container {{ $labels.container }} critical memory'
+                description: 'Container {{ $labels.container }} ({{ $labels.service }}) memory usage is {{ $value | printf "%.1f" }}% — risk of OOM.'
+                runbook_url: 'docs/observability/runbooks/container-high-memory.md'
+
+          - alert: ContainerOOMKilled
+            expr: strafor:container_oom:increase15m > 0
+            for: 0m
+            labels:
+                severity: critical
+                category: container
+            annotations:
+                summary: 'Container {{ $labels.container }} OOM killed'
+                description: 'Container {{ $labels.container }} ({{ $labels.service }}) was OOM killed {{ $value }} time(s) in the last 15 minutes.'
+                runbook_url: 'docs/observability/runbooks/container-oom.md'
+
+          - alert: ContainerRestarting
+            expr: strafor:container_restarts:changes1h > 3
+            for: 1m
+            labels:
+                severity: warning
+                category: container
+            annotations:
+                summary: 'Container {{ $labels.container }} restarting'
+                description: 'Container {{ $labels.container }} ({{ $labels.service }}) restarted {{ $value }} time(s) in the last hour.'
+                runbook_url: 'docs/observability/runbooks/container-restarting.md'
+
+    # ---- Service RED alerts ----
+    - name: strafor-service-alerts
+      interval: 30s
+      rules:
+          - alert: ServiceTargetDown
+            expr: probe_success{job="blackbox-http"} == 0
+            for: 1m
+            labels:
+                severity: critical
+                category: service
+            annotations:
+                summary: 'Service {{ $labels.service }} is down'
+                description: 'Service {{ $labels.service }} has been unreachable for 1 minute.'
+                runbook_url: 'docs/observability/runbooks/service-down.md'
+
+          - alert: ServiceHighErrorRate
+            expr: strafor:http_error_ratio:rate5m > 0.05
+            for: 5m
+            labels:
+                severity: warning
+                category: service
+            annotations:
+                summary: 'Service {{ $labels.service }} high error rate'
+                description: 'Service {{ $labels.service }} error rate is {{ $value | printf "%.1f" }}% (5xx) for 5 minutes.'
+                runbook_url: 'docs/observability/runbooks/service-high-errors.md'
+
+          - alert: ServiceCriticalErrorRate
+            expr: strafor:http_error_ratio:rate5m > 0.20
+            for: 2m
+            labels:
+                severity: critical
+                category: service
+            annotations:
+                summary: 'Service {{ $labels.service }} critical error rate'
+                description: 'Service {{ $labels.service }} error rate is {{ $value | printf "%.1f" }}% (5xx) for 2 minutes.'
+                runbook_url: 'docs/observability/runbooks/service-high-errors.md'
+
+          - alert: ServiceHighLatencyP95
+            expr: strafor:http_latency_p95:5m > 2
+            for: 5m
+            labels:
+                severity: warning
+                category: service
+            annotations:
+                summary: 'Service {{ $labels.service }} high latency (P95)'
+                description: 'Service {{ $labels.service }} P95 latency is {{ $value | printf "%.2f" }}s for 5 minutes.'
+                runbook_url: 'docs/observability/runbooks/service-high-latency.md'
+
+          - alert: ServiceCriticalLatencyP95
+            expr: strafor:http_latency_p95:5m > 10
+            for: 2m
+            labels:
+                severity: critical
+                category: service
+            annotations:
+                summary: 'Service {{ $labels.service }} critical latency (P95)'
+                description: 'Service {{ $labels.service }} P95 latency is {{ $value | printf "%.2f" }}s for 2 minutes.'
+                runbook_url: 'docs/observability/runbooks/service-high-latency.md'
+
+    # ---- Platform datastore alerts ----
+    - name: strafor-platform-alerts
+      interval: 30s
+      rules:
+          - alert: PostgresTooManyConnections
+            expr: sum(pg_connections_by_db) > 80
+            for: 5m
+            labels:
+                severity: warning
+                category: postgres
+            annotations:
+                summary: 'PostgreSQL high connection count'
+                description: 'PostgreSQL has {{ $value }} active connections across all databases.'
+                runbook_url: 'docs/observability/runbooks/postgres-connections.md'
+
+          - alert: PostgresLongRunningQueries
+            expr: pg_long_running_queries > 0
+            for: 2m
+            labels:
+                severity: warning
+                category: postgres
+            annotations:
+                summary: 'PostgreSQL long running queries'
+                description: '{{ $value }} query(ies) running for more than 60 seconds.'
+                runbook_url: 'docs/observability/runbooks/postgres-long-queries.md'
+
+          - alert: RedisHighMemory
+            expr: redis_memory_used_bytes > 200000000
+            for: 5m
+            labels:
+                severity: warning
+                category: redis
+            annotations:
+                summary: 'Redis high memory usage'
+                description: 'Redis is using {{ $value | humanize1024 }} of memory.'
+                runbook_url: 'docs/observability/runbooks/redis-high-memory.md'
+
+          - alert: RabbitMQQueueBacklog
+            expr: sum(rabbitmq_queue_messages_ready) > 1000
+            for: 10m
+            labels:
+                severity: warning
+                category: rabbitmq
+            annotations:
+                summary: 'RabbitMQ queue backlog'
+                description: '{{ $value }} messages ready across all queues for 10 minutes.'
+                runbook_url: 'docs/observability/runbooks/rabbitmq-backlog.md'
+
+          - alert: RabbitMQUnackedMessages
+            expr: sum(rabbitmq_queue_messages_unacknowledged) > 500
+            for: 5m
+            labels:
+                severity: warning
+                category: rabbitmq
+            annotations:
+                summary: 'RabbitMQ unacked messages'
+                description: '{{ $value }} unacked messages across all queues for 5 minutes.'
+                runbook_url: 'docs/observability/runbooks/rabbitmq-unacked.md'
+
+          - alert: MinIODown
+            expr: probe_success{service="minio"} == 0
+            for: 1m
+            labels:
+                severity: critical
+                category: minio
+            annotations:
+                summary: 'MinIO is down'
+                description: 'MinIO has been unreachable for 1 minute.'
+                runbook_url: 'docs/observability/runbooks/minio-down.md'
+
+    # ---- AI/LLM alerts ----
+    - name: strafor-ai-alerts
+      interval: 30s
+      rules:
+          - alert: LLMBudgetExceeded
+            expr: llm_budget_ratio > 1
+            for: 1m
+            labels:
+                severity: critical
+                category: ai
+            annotations:
+                summary: 'LLM monthly budget exceeded'
+                description: 'LLM budget utilization is {{ $value | printf "%.1f" }}% of the monthly limit.'
+                runbook_url: 'docs/observability/runbooks/llm-budget.md'
+
+          - alert: LLMBudgetWarning
+            expr: llm_budget_ratio > 0.8
+            for: 5m
+            labels:
+                severity: warning
+                category: ai
+            annotations:
+                summary: 'LLM budget 80% consumed'
+                description: 'LLM budget utilization is {{ $value | printf "%.1f" }}% of the monthly limit.'
+                runbook_url: 'docs/observability/runbooks/llm-budget.md'
+
+          - alert: CeleryTaskFailures
+            expr: rate(celery_task_failed_total[5m]) > 0.5
+            for: 5m
+            labels:
+                severity: warning
+                category: ai
+            annotations:
+                summary: 'Celery task failures'
+                description: 'Celery worker is failing {{ $value | printf "%.1f" }} tasks/sec for 5 minutes.'
+                runbook_url: 'docs/observability/runbooks/celery-failures.md'
+
+          - alert: AIMatchingDown
+            expr: probe_success{service="ai-matching"} == 0
+            for: 1m
+            labels:
+                severity: critical
+                category: ai
+            annotations:
+                summary: 'AI matching service is down'
+                description: 'AI matching service has been unreachable for 1 minute.'
+                runbook_url: 'docs/observability/runbooks/ai-matching-down.md'
+
+    # ---- Observability stack self-monitoring ----
+    - name: strafor-observability-alerts
+      interval: 30s
+      rules:
+          - alert: PrometheusDown
+            expr: up{job="prometheus"} == 0
+            for: 1m
+            labels:
+                severity: critical
+                category: observability
+            annotations:
+                summary: 'Prometheus is down'
+                description: 'Prometheus has been unreachable for 1 minute.'
+
+          - alert: GrafanaDown
+            expr: up{job="grafana"} == 0
+            for: 1m
+            labels:
+                severity: warning
+                category: observability
+            annotations:
+                summary: 'Grafana is down'
+                description: 'Grafana has been unreachable for 1 minute.'
+
+          - alert: LokiDown
+            expr: up{job="loki"} == 0
+            for: 2m
+            labels:
+                severity: warning
+                category: observability
+            annotations:
+                summary: 'Loki is down'
+                description: 'Loki has been unreachable for 2 minutes.'
+
+          - alert: TempoDown
+            expr: up{job="tempo"} == 0
+            for: 2m
+            labels:
+                severity: warning
+                category: observability
+            annotations:
+                summary: 'Tempo is down'
+                description: 'Tempo has been unreachable for 2 minutes.'
+
+          - alert: AlertmanagerDown
+            expr: up{job="alertmanager"} == 0
+            for: 1m
+            labels:
+                severity: critical
+                category: observability
+            annotations:
+                summary: 'Alertmanager is down'
+                description: 'Alertmanager has been unreachable for 1 minute.'
+
+    # ---- Meta alerts ----
+    - name: strafor-meta-alerts
+      interval: 30s
+      rules:
+          - alert: PrometheusTargetMissing
+            # prometheus_sd_discovered_targets is a count gauge, not a timestamp —
+            # staleness must be measured against prometheus_sd_last_update_timestamp_seconds.
+            # Scoped to name="scrape": notify/alertmanager SD is push-based and may
+            # legitimately go quiet for long periods.
+            expr: time() - prometheus_sd_last_update_timestamp_seconds{name="scrape"} > 300
+            for: 5m
+            labels:
+                severity: info
+                category: meta
+            annotations:
+                summary: 'Prometheus target discovery stale'
+                description: 'Discovery {{ $labels.config }} has not updated in 5 minutes.'
+
+          - alert: PrometheusTSDBLowDisk
+            expr: |
+                (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}
+                / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}) < 0.15
+            for: 5m
+            labels:
+                severity: critical
+                category: meta
+            annotations:
+                summary: 'Low disk space for Prometheus TSDB'
+                description: 'Host disk is {{ $value | printf "%.1f" }}% free — Prometheus TSDB retention at risk.'
+                runbook_url: 'docs/observability/runbooks/low-disk.md'
+
+          - alert: PrometheusTooManyScrapeFailures
+            expr: rate(prometheus_target_scrape_pool_failures_total[5m]) > 0.1
+            for: 5m
+            labels:
+                severity: warning
+                category: meta
+            annotations:
+                summary: 'Prometheus scrape failures'
+                description: 'Prometheus is experiencing scrape failures at {{ $value | printf "%.1f" }}/s.'
