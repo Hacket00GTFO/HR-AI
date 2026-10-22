@@ -1,0 +1,202 @@
+# Extracted services — each owns infra/compose/services/<name>.yml
+include:
+    - infra/compose/services/identity-auth.yml
+    - infra/compose/services/gateway.yml
+    - infra/compose/services/documents-resumes.yml
+    - infra/compose/services/hr-core.yml
+    - infra/compose/services/notifications.yml
+    - infra/compose/services/ai-matching.yml
+    - infra/compose/services/analytics.yml
+    - infra/compose/services/recruitment-core.yml
+    - infra/compose/services/time-attendance.yml
+    - infra/compose/services/payroll-adapter.yml
+    - infra/compose/services/hr-services.yml
+    - infra/compose/services/directory-sync.yml
+    - infra/compose/services/calendar-bridge.yml
+    - infra/compose/services/web.yml
+    # Observability stack (Prometheus + Grafana + Loki + Tempo + Alertmanager + exporters)
+    - infra/compose/observability/prometheus.yml
+    - infra/compose/observability/alertmanager.yml
+    - infra/compose/observability/grafana.yml
+    - infra/compose/observability/loki.yml
+    - infra/compose/observability/tempo.yml
+    - infra/compose/observability/promtail.yml
+    - infra/compose/observability/cadvisor.yml
+    - infra/compose/observability/node-exporter.yml
+    - infra/compose/observability/postgres-exporter.yml
+    - infra/compose/observability/redis-exporter.yml
+    - infra/compose/observability/blackbox-exporter.yml
+    - infra/compose/observability/celery-exporter.yml
+
+services:
+    db:
+        # pgvector image — the `vector` extension (installed by migration 0002)
+        # is not available in stock postgres images.
+        image: pgvector/pgvector:pg16
+        restart: unless-stopped
+        environment:
+            POSTGRES_DB: ${POSTGRES_DB}
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        volumes:
+            - pgdata:/var/lib/postgresql/data
+            # Creates one database per service (first init only — empty pgdata).
+            # Per-service schemas are owned by each service's own migrations.
+            - ./infra/compose/initdb:/docker-entrypoint-initdb.d:ro
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        ports:
+            - '127.0.0.1:5433:5432'
+        deploy:
+            resources:
+                limits:
+                    memory: 1G
+
+    # ---- Platform services (shared infra for the extracted services) ----
+
+    redis:
+        image: redis:7-alpine
+        restart: unless-stopped
+        command: ['redis-server', '--appendonly', 'yes']
+        volumes:
+            - redis-data:/data
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        ports:
+            - '127.0.0.1:6380:6379'
+        deploy:
+            resources:
+                limits:
+                    memory: 256M
+
+    rabbitmq:
+        image: rabbitmq:3-management-alpine
+        restart: unless-stopped
+        environment:
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+        volumes:
+            - rabbitmq-data:/var/lib/rabbitmq
+            # Enables rabbitmq_prometheus plugin (metrics on :15692/metrics).
+            - ./infra/observability/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+        healthcheck:
+            test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+            interval: 10s
+            timeout: 5s
+            retries: 12
+        ports:
+            - '5672:5672'
+            - '15672:15672'
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+
+    minio:
+        image: minio/minio:latest
+        restart: unless-stopped
+        command: ['server', '/data', '--console-address', ':9001']
+        environment:
+            MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+            MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+            # Public Prometheus scrape (no JWT) on /minio/v2/metrics/cluster.
+            MINIO_PROMETHEUS_AUTH_TYPE: public
+        volumes:
+            - minio-data:/data
+        healthcheck:
+            test: ['CMD-SHELL', 'mc ready local || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+        ports:
+            - '9000:9000'
+            - '9001:9001'
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+
+    mailpit:
+        image: axllent/mailpit:latest
+        restart: unless-stopped
+        ports:
+            - '1025:1025' # SMTP sink
+            - '8025:8025' # web UI
+        deploy:
+            resources:
+                limits:
+                    memory: 128M
+
+    api:
+        build:
+            context: .
+            dockerfile: apps/api/Dockerfile
+        restart: unless-stopped
+        depends_on:
+            db:
+                condition: service_healthy
+        environment:
+            DATABASE_URL: ${DATABASE_URL}
+            PORT: ${PORT:-3000}
+            NODE_ENV: production
+            JWT_SECRET: ${JWT_SECRET}
+            JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+            CORS_ORIGIN: ${CORS_ORIGIN:-}
+            RESUMES_DIR: /app/secure_uploads/resumes
+            EXPORTS_DIR: /app/secure_uploads/exports
+            IDENTITY_URL: http://identity-auth:3001
+            IDENTITY_JWKS_URL: http://identity-auth:3001/.well-known/jwks.json
+            SERVICE_AUTH_TOKEN: ${SERVICE_AUTH_TOKEN}
+            AI_SERVICE_URL: http://ai-matching:3005
+            DOCUMENTS_URL: http://documents-resumes:3004
+            NOTIFICATIONS_URL: http://notifications:3007
+            ANALYTICS_URL: http://analytics:3008
+            GATEWAY_URL: http://gateway:8081
+            MINIO_URL: http://minio:9000
+            MAILPIT_URL: http://mailpit:8025
+            RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+            SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY}
+            REDIS_URL: redis://redis:6379
+            # Observability
+            SERVICE_NAME: api
+            METRICS_TOKEN: ${METRICS_TOKEN}
+            PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+            ALERTMANAGER_URL: ${ALERTMANAGER_URL:-http://alertmanager:9093}
+            ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN}
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+            OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+            OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.2}
+        labels:
+            # Prometheus docker_sd discovery labels.
+            prometheus.scrape: 'true'
+            prometheus.port: '3000'
+            prometheus.path: '/metrics'
+        ports:
+            - '3000:3000'
+        volumes:
+            - resumes-data:/app/secure_uploads/resumes
+            - exports-data:/app/secure_uploads/exports
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+
+volumes:
+    pgdata:
+    resumes-data:
+    exports-data:
+    redis-data:
+    rabbitmq-data:
+    minio-data:
+    # Observability stack (added in F1)
+    prometheus-data:
+    grafana-data:
+    loki-data:
+    tempo-data:
+    alertmanager-data:

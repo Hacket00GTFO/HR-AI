@@ -1,0 +1,7 @@
+# Generated RSA key material — never commit. Use scripts/genkeys.js.
+keys/
+*.pem
+
+# Local env
+.env
+.env.local
