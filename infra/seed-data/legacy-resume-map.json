@@ -1,0 +1,14 @@
+{
+    "jane-doe-cv.pdf": {
+        "documentId": "39aee46b-1244-4e84-8aa9-5a44e085ab24",
+        "deduplicated": true
+    },
+    "john-smith-resume.pdf": {
+        "documentId": "d22da2d0-3d56-4418-96d4-3eef66069119",
+        "deduplicated": false
+    },
+    "maria-garcia-cv.docx": {
+        "documentId": "b8888375-f021-4676-ab5a-c43a0039d557",
+        "deduplicated": false
+    }
+}
